@@ -1,0 +1,31 @@
+#!/bin/bash
+# Runs as root after the payload is laid down. Registers the native-messaging
+# manifest system-wide for every Chromium-family browser so Chrome can launch
+# the Giddh DSC host. Idempotent — safe to re-run.
+set -e
+
+INSTALL_DIR="/usr/local/giddh-dsc-bridge"
+HOST_NAME="com.giddh.dsc.bridge"
+SRC="$INSTALL_DIR/$HOST_NAME.json"
+
+# System-level native-messaging host directories (root-writable).
+DIRS=(
+  "/Library/Google/Chrome/NativeMessagingHosts"
+  "/Library/Google/Chrome Beta/NativeMessagingHosts"
+  "/Library/Microsoft/Edge/NativeMessagingHosts"
+  "/Library/Application Support/Chromium/NativeMessagingHosts"
+  "/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+)
+
+for d in "${DIRS[@]}"; do
+  mkdir -p "$d"
+  cp "$SRC" "$d/$HOST_NAME.json"
+  chmod 644 "$d/$HOST_NAME.json"
+done
+
+# Strip the quarantine flag from the installed host so Gatekeeper does not block
+# it when Chrome launches it. (Unsigned build — remove once Developer ID signing
+# + notarization are in place.)
+xattr -dr com.apple.quarantine "$INSTALL_DIR" 2>/dev/null || true
+
+exit 0

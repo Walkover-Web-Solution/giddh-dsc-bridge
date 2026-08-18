@@ -1,0 +1,11 @@
+Package: giddh-dsc-bridge
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Installed-Size: @SIZE@
+Maintainer: Giddh <support@giddh.com>
+Description: Giddh DSC Bridge native messaging host
+ Connects the Giddh browser extension to hardware DSC (PKCS#11) tokens for
+ client-side PDF signing. Installs a self-contained native-messaging host and
+ registers it with Chromium-family browsers.

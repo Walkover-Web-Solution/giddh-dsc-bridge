@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Giddh DSC Bridge — Standalone Tester</title>
+  <style>
+    :root { --teal:#0891b2; --teal-d:#0e7490; --slate:#475569; --ink:#0f172a; --bd:#e2e8f0; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+           margin: 0; background: #f8fafc; color: var(--ink); }
+    .wrap { max-width: 820px; margin: 0 auto; padding: 28px 20px 60px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .sub { color: var(--slate); font-size: 14px; margin: 0 0 22px; }
+    .card { background:#fff; border:1px solid var(--bd); border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+    .card h2 { font-size:15px; margin:0 0 12px; }
+    .status { display:inline-flex; align-items:center; gap:8px; font-weight:600; font-size:13px; }
+    .dot { width:10px; height:10px; border-radius:50%; background:#cbd5e1; }
+    .dot.ok { background:#059669; } .dot.bad { background:#dc2626; }
+    button { background: linear-gradient(135deg, var(--teal), var(--teal-d)); color:#fff; border:0;
+             border-radius:8px; padding:9px 15px; font-size:13px; font-weight:600; cursor:pointer; }
+    button.ghost { background:#eef2f6; color:var(--slate); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    input { width:100%; padding:9px 11px; border:2px solid var(--bd); border-radius:8px; font-size:14px; }
+    label { font-size:12px; font-weight:600; color:var(--slate); display:block; margin:10px 0 5px; }
+    pre { background:#0f172a; color:#e2e8f0; border-radius:8px; padding:14px; font-size:12px;
+          overflow:auto; max-height:340px; white-space:pre-wrap; word-break:break-word; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; }
+    .cert { border:1px solid var(--bd); border-radius:8px; padding:10px 12px; margin-bottom:8px; cursor:pointer; }
+    .cert.sel { border-color:var(--teal); background:#f0fdff; }
+    .cert b { font-size:13px; } .cert span { display:block; font-size:11px; color:var(--slate); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Giddh DSC Bridge — Standalone Tester</h1>
+    <p class="sub">A dependency-free page to verify the bridge extension + PKCS#11 native host
+       work on this machine, independent of Giddh. Serve it over http(s) or open as a file.</p>
+
+    <div class="card">
+      <h2>1. Bridge status</h2>
+      <div class="status"><span id="dot" class="dot"></span><span id="statusText">Checking…</span></div>
+      <div class="row" style="margin-top:12px;">
+        <button id="btnRecheck" class="ghost">Re-check</button>
+        <button id="btnDiag">Run diagnose</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2. Certificates on token</h2>
+      <button id="btnCerts">Read certificates</button>
+      <div id="certList" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>3. Sign a test hash</h2>
+      <p class="sub" style="margin:0 0 6px;">Signs the SHA-256 of the text below with the selected certificate.</p>
+      <label>Text to hash &amp; sign</label>
+      <input id="text" value="hello dsc bridge">
+      <label>Token PIN</label>
+      <input id="pin" type="password" placeholder="Token PIN">
+      <div class="row" style="margin-top:12px;"><button id="btnSign" disabled>Sign</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Output</h2>
+      <pre id="out">(results appear here)</pre>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const out = (o) => { $("out").textContent = (typeof o === "string") ? o : JSON.stringify(o, null, 2); };
+    let certs = [], selected = null;
+
+    function refresh() {
+      const ok = !!window.GiddhBridge;
+      $("dot").className = "dot " + (ok ? "ok" : "bad");
+      $("statusText").textContent = ok ? "Giddh DSC Bridge detected" : "Bridge NOT detected — install the extension + native host";
+      $("btnCerts").disabled = !ok;
+      $("btnDiag").disabled = !ok;
+    }
+
+    async function toB64(buf) {
+      let bin = ""; const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    }
+
+    function renderCerts() {
+      $("certList").innerHTML = certs.map((c, i) =>
+        `<div class="cert ${i === selected ? "sel" : ""}" data-i="${i}">
+           <b>${c.subjectCn || "Unknown"}</b>
+           <span>Issued by ${c.issuerCn || "?"}${c.notAfter ? " · valid until " + c.notAfter.slice(0,10) : ""}</span>
+         </div>`).join("") || "<i>No certificates.</i>";
+      document.querySelectorAll(".cert").forEach(el =>
+        el.onclick = () => { selected = +el.dataset.i; renderCerts(); $("btnSign").disabled = false; });
+    }
+
+    $("btnRecheck").onclick = refresh;
+    $("btnDiag").onclick = async () => { out("Running diagnose…"); out(await window.GiddhBridge.diagnose()); };
+    $("btnCerts").onclick = async () => {
+      out("Reading certificates…");
+      const r = await window.GiddhBridge.getCertificate();
+      if (!r || !r.success) { out(r); return; }
+      certs = r.certificates || []; selected = certs.length ? 0 : null;
+      renderCerts(); $("btnSign").disabled = selected === null; out(r);
+    };
+    $("btnSign").onclick = async () => {
+      if (selected === null) return;
+      const enc = new TextEncoder().encode($("text").value);
+      const digest = await crypto.subtle.digest("SHA-256", enc);
+      const hashB64 = await toB64(digest);
+      out("Signing…");
+      const r = await window.GiddhBridge.signHash(hashB64, "SHA256", certs[selected].certId, $("pin").value);
+      out(r);
+    };
+
+    window.addEventListener("giddh-dsc-bridge-ready", refresh);
+    refresh();
+    setTimeout(refresh, 800); // content script may inject slightly after load
+  </script>
+</body>
+</html>

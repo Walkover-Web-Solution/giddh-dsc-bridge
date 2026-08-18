@@ -1,0 +1,17 @@
+#!/bin/bash
+# Removes the native-messaging manifests on uninstall.
+set -e
+
+HOST_NAME="com.giddh.dsc.bridge"
+DIRS=(
+  "/etc/opt/chrome/native-messaging-hosts"
+  "/etc/chromium/native-messaging-hosts"
+  "/etc/opt/edge/native-messaging-hosts"
+  "/etc/opt/brave/native-messaging-hosts"
+)
+
+for d in "${DIRS[@]}"; do
+  rm -f "$d/$HOST_NAME.json"
+done
+
+exit 0

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Giddh DSC Bridge — Full-Flow Test Server</title>
+  <style>
+    :root { --teal:#0891b2; --teal-d:#0e7490; --slate:#475569; --ink:#0f172a; --bd:#e2e8f0; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+           margin: 0; background: #f8fafc; color: var(--ink); }
+    .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 60px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .sub { color: var(--slate); font-size: 14px; margin: 0 0 22px; }
+    .card { background:#fff; border:1px solid var(--bd); border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+    .card h2 { font-size:15px; margin:0 0 12px; }
+    .step { display:inline-block; width:22px; height:22px; line-height:22px; text-align:center;
+            border-radius:50%; background:var(--teal); color:#fff; font-size:12px; margin-right:8px; }
+    .status { display:inline-flex; align-items:center; gap:8px; font-weight:600; font-size:13px; }
+    .dot { width:10px; height:10px; border-radius:50%; background:#cbd5e1; }
+    .dot.ok { background:#059669; } .dot.bad { background:#dc2626; }
+    button { background: linear-gradient(135deg, var(--teal), var(--teal-d)); color:#fff; border:0;
+             border-radius:8px; padding:9px 15px; font-size:13px; font-weight:600; cursor:pointer; }
+    button.ghost { background:#eef2f6; color:var(--slate); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    input { width:100%; padding:9px 11px; border:2px solid var(--bd); border-radius:8px; font-size:14px; }
+    label { font-size:12px; font-weight:600; color:var(--slate); display:block; margin:10px 0 5px; }
+    pre { background:#0f172a; color:#e2e8f0; border-radius:8px; padding:14px; font-size:12px;
+          overflow:auto; max-height:340px; white-space:pre-wrap; word-break:break-word; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .cert { border:1px solid var(--bd); border-radius:8px; padding:10px 12px; margin-bottom:8px; cursor:pointer; }
+    .cert.sel { border-color:var(--teal); background:#f0fdff; }
+    .cert b { font-size:13px; } .cert span { display:block; font-size:11px; color:var(--slate); }
+    a.dl { color:var(--teal-d); font-weight:600; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Giddh DSC Bridge — Full-Flow Test Server</h1>
+    <p class="sub">Proves the ENTIRE chain on this machine without Giddh: extension → native host →
+       token → server prepare/finish → PAdES-signed PDF. Open the downloaded PDF in <b>Adobe Acrobat</b>
+       to see the signature panel.</p>
+
+    <div class="card">
+      <h2><span class="step">1</span>Bridge status</h2>
+      <div class="status"><span id="dot" class="dot"></span><span id="statusText">Checking…</span></div>
+      <div class="row" style="margin-top:12px;">
+        <button id="btnRecheck" class="ghost">Re-check</button>
+        <button id="btnDiag">Run diagnose</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2><span class="step">2</span>Read certificates from token</h2>
+      <button id="btnCerts">Read certificates</button>
+      <div id="certList" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="card">
+      <h2><span class="step">3</span>Sign the test PDF (full flow)</h2>
+      <label>Token PIN</label>
+      <input id="pin" type="password" placeholder="Token PIN">
+      <div class="row" style="margin-top:12px;">
+        <button id="btnSign" disabled>Sign PDF</button>
+        <button id="btnReset" class="ghost">Reset document</button>
+        <a id="dlLink" class="dl" href="/download" style="display:none;">⬇ Download signed PDF</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Output</h2>
+      <pre id="out">(results appear here)</pre>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const out = (o) => { $("out").textContent = (typeof o === "string") ? o : JSON.stringify(o, null, 2); };
+    let certs = [], selected = null;
+
+    // ── Pluggable adapters ──────────────────────────────────────────────────
+    // The page is decoupled from any specific extension. To use a DIFFERENT
+    // third-party signer tool, add an adapter here (or reuse the app's
+    // dsc-signing.js registry). Two built-ins are provided:
+    //   • Giddh bridge    → window.GiddhBridge
+    //   • Signer.Digital  → window.SignerDigital  (a common third-party tool)
+    const ADAPTERS = [
+      {
+        name: "giddh-bridge",
+        requiresPin: true,
+        isAvailable: () => !!window.GiddhBridge,
+        diagnose: () => window.GiddhBridge.diagnose(),
+        getCertificate: () => window.GiddhBridge.getCertificate(),
+        signHash: (h, algo, certId, pin) => window.GiddhBridge.signHash(h, algo, certId, pin),
+      },
+      {
+        name: "signer-digital",
+        requiresPin: false, // Signer.Digital prompts for the PIN in its own UI
+        isAvailable: () => !!(window.SignerDigital || window.signerDigital),
+        diagnose: async () => ({ success: false, error: "Signer.Digital has no diagnose()" }),
+        getCertificate: async () => {
+          const sd = window.SignerDigital || window.signerDigital;
+          let res = await sd.getSelectedCertificate();
+          if (typeof res === "string" && res.trim().charAt(0) === "{") { try { res = JSON.parse(res); } catch (_) {} }
+          if (typeof res === "string") return { success: true, certificates: [{ certB64: res.trim(), certId: null, subjectCn: null }] };
+          const certB64 = res.Cert || res.cert || res.certificate || res.CertBase64 || res.Certificate || res.PublicKey;
+          const thumb = res.CertThumbPrint || res.Thumbprint || res.thumbprint || null;
+          return { success: !!certB64, certificates: certB64 ? [{ certB64, certId: thumb, subjectCn: res.SelCertSubject || null }] : [] };
+        },
+        signHash: async (h, algo, certId /*, pin*/) => {
+          const sd = window.SignerDigital || window.signerDigital;
+          let sig;
+          try {
+            sig = await sd.signHash(h, algo || "SHA256", certId || "");
+          } catch (e) {
+            // Signer.Digital rejects unlicensed origins here. Surface it verbatim.
+            return { success: false, error: (e && (e.message || e)) || "Signer.Digital rejected the sign request" };
+          }
+          if (typeof sig === "string" && sig.trim().charAt(0) === "{") { try { sig = JSON.parse(sig); } catch (_) {} }
+          const signature = (typeof sig === "string") ? sig : (sig && (sig.Signature || sig.signature));
+          // Some builds RETURN the error as a string instead of rejecting.
+          if (typeof signature === "string" && /error|not licensed|sdhost|license/i.test(signature)) {
+            return { success: false, error: signature };
+          }
+          if (!signature) return { success: false, error: "No signature returned: " + JSON.stringify(sig) };
+          return { success: true, signature };
+        },
+      },
+    ];
+
+    function activeAdapter() {
+      for (const a of ADAPTERS) { try { if (a.isAvailable()) return a; } catch (_) {} }
+      return null;
+    }
+
+    function refresh() {
+      const a = activeAdapter();
+      const ok = !!a;
+      $("dot").className = "dot " + (ok ? "ok" : "bad");
+      $("statusText").textContent = ok ? ("Bridge detected: " + a.name)
+                                       : "No bridge detected — install an extension + native host";
+      $("btnCerts").disabled = !ok;
+      $("btnDiag").disabled = !ok;
+    }
+
+    async function postJson(url, body) {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
+    }
+
+    function renderCerts() {
+      $("certList").innerHTML = certs.map((c, i) =>
+        `<div class="cert ${i === selected ? "sel" : ""}" data-i="${i}">
+           <b>${c.subjectCn || "Unknown"}</b>
+           <span>Issued by ${c.issuerCn || "?"}${c.notAfter ? " · valid until " + c.notAfter.slice(0,10) : ""}</span>
+         </div>`).join("") || "<i>No certificates.</i>";
+      document.querySelectorAll(".cert").forEach(el =>
+        el.onclick = () => { selected = +el.dataset.i; renderCerts(); $("btnSign").disabled = false; });
+    }
+
+    $("btnRecheck").onclick = refresh;
+    $("btnDiag").onclick = async () => {
+      const a = activeAdapter(); if (!a) return out("No bridge detected.");
+      out("Running diagnose via " + a.name + "…"); out(await a.diagnose());
+    };
+
+    $("btnCerts").onclick = async () => {
+      const a = activeAdapter(); if (!a) return out("No bridge detected.");
+      out("Reading certificates via " + a.name + "…");
+      const r = await a.getCertificate();
+      if (!r || !r.success) { out(r); return; }
+      certs = r.certificates || []; selected = certs.length ? 0 : null;
+      renderCerts(); $("btnSign").disabled = selected === null; out(r);
+    };
+
+    $("btnReset").onclick = async () => {
+      await postJson("/reset");
+      $("dlLink").style.display = "none";
+      out("Document reset. Sign again for a fresh signature.");
+    };
+
+    $("btnSign").onclick = async () => {
+      if (selected === null) return;
+      const a = activeAdapter(); if (!a) return out("No bridge detected.");
+      const cert = certs[selected];
+      $("btnSign").disabled = true;
+      try {
+        // 1) prepare on the server → hash to sign. Send the chain now so the
+        //    reserved signature placeholder is sized for the full CMS.
+        out("① Preparing on server (building hash) via " + a.name + "…");
+        const prep = await postJson("/dsc/prepare",
+          { certificate: cert.certB64, chain: cert.chain || [] });
+        if (!prep.ok || !prep.data.success) throw new Error("prepare failed: " + JSON.stringify(prep.data));
+        const { nonce, hash_b64, md_algorithm } = prep.data;
+
+        // 2) token signs the hash. PIN is only passed for adapters that need it;
+        //    tools like Signer.Digital prompt for the PIN in their own UI.
+        out("② Signing hash on token (enter PIN if prompted)…");
+        const pin = a.requiresPin ? $("pin").value : "";
+        const sig = await a.signHash(
+          hash_b64, (md_algorithm || "sha256").toUpperCase(), cert.certId, pin);
+        if (!sig || !sig.success) throw new Error("Token sign failed: " + (sig && sig.error ? sig.error : JSON.stringify(sig)));
+
+        // 3) finish on the server → embed CMS, PAdES-seal.
+        //    Pass the token's CA chain so Adobe can build the full trust path.
+        out("③ Embedding signature on server…");
+        const fin = await postJson("/dsc/finish",
+          { nonce, signature: sig.signature, chain: cert.chain || [] });
+        if (!fin.ok || !fin.data.success) throw new Error("finish failed: " + JSON.stringify(fin.data));
+
+        $("dlLink").style.display = "inline";
+        out({ result: "SIGNED ✔", ...fin.data });
+      } catch (e) {
+        out("ERROR: " + (e && (e.message || e)));
+      } finally {
+        $("btnSign").disabled = false;
+      }
+    };
+
+    window.addEventListener("giddh-dsc-bridge-ready", refresh);
+    refresh();
+    setTimeout(refresh, 800);
+  </script>
+</body>
+</html>
