@@ -2,8 +2,12 @@
 
 This document explains how to wire the **DSC Bridge** (browser extension +
 native host) into a web application to produce cryptographically-signed PDFs
-(**deferred PAdES**). It complements `README.md` (which covers the bridge itself)
-and `../dsc_signing/README.md` (the portable server engine).
+(**deferred PAdES**). It complements `README.md` (which covers the bridge itself).
+
+> This repo ships only the **client-side bridge** (extension + native host that
+> reads the token and signs a hash). The **server-side PDF/PAdES embedding
+> engine** is not included here — implement it in your own backend using the
+> contract below, or reuse whatever PAdES library you prefer.
 
 > **Golden rule:** the private key and PIN **never** reach the server. The server
 > only ever computes a *hash to sign* and later receives the *signature*.
@@ -36,9 +40,8 @@ Two server endpoints, two bridge calls. The `nonce` ties `prepare` to `finish`.
 
 ## 2. HTTP contract (server endpoints)
 
-Reference implementation: `giddh/blueprints/dsc.py` (thin adapter over the
-portable `dsc_signing` package). Paths below are Giddh' — adapt the prefix to
-your app.
+Your own backend must implement these two endpoints. Paths below are Giddh's —
+adapt the prefix to your app.
 
 ### `POST /<access_token>/dsc/prepare`
 
@@ -117,7 +120,33 @@ const { success, signature } =
 
 // 3. Diagnose install/driver issues (no token/PIN needed)
 console.log(await window.GiddhBridge.diagnose());
+
+// 4. List PKCS#11 modules — READ-ONLY (no token/PIN needed)
+const { success, modules, readers, preferred, strict } =
+  await window.GiddhBridge.listModules();
+// modules: [{ driver_path, manufacturer_id, library_description,
+//             library_version, cryptoki_version, driver_exists, driver_loads,
+//             driver_arches, arch_mismatch, slots, slot_errors, tokens,
+//             attached, preferred }]
+// readers: [{ reader, card_present, exclusive_ok, locked, status }]  <- PC/SC
+// Useful for a "which token did we find?" panel and for support tickets.
+// Attaching or pinning a module is deliberately NOT exposed here — it happens
+// only in the desktop companion app, so a page can never make the native host
+// dlopen an arbitrary library.
 ```
+
+**Read `readers` (PC/SC), not module error codes, to explain a failure.** A
+module that cannot drive the inserted card reports `CKR_TOKEN_NOT_PRESENT` or
+`CKR_TOKEN_NOT_RECOGNIZED` — indistinguishable from an empty reader — so module
+errors alone will lead you to the wrong conclusion. The two cases to separate:
+
+| PC/SC says | Meaning | Code surfaced |
+| --- | --- | --- |
+| `locked: true` | another app really holds the card | `TOKEN_BUSY_OR_ABSENT` |
+| `card_present: true, locked: false`, yet no module found a token | card is fine; the right PKCS#11 module is missing | `TOKEN_UNSUPPORTED_BY_MODULE` |
+| `card_present: false` | nothing inserted | `NO_TOKEN` |
+
+Surface those messages as-is: each already names the reader and states the fix.
 
 Message protocol and error `code`s are documented in `README.md`.
 
@@ -145,16 +174,12 @@ page works with either bridge.
 
 ---
 
-## 5. Server engine options
+## 5. Server engine
 
-- **Reuse `dsc_signing/`** (recommended): framework-agnostic. Implement four
-  small ports (`WorkingPdfStore`, `StateStore`, `ProvenanceSink`, `AuditSink`)
-  and call `service.prepare()` / `service.finish()`. See `../dsc_signing/README.md`.
-- **Roll your own**: any server that can (a) verify an X.509 cert, (b) return the
-  SHA-256 hash of the PDF's signed attributes, and (c) embed the resulting CMS as
-  an incremental PAdES update will work with this bridge unchanged.
-
-Runtime deps for the engine: `pyhanko pyhanko-certvalidator asn1crypto cryptography`.
+This repo does **not** include a server-side PDF/PAdES engine. Your backend must
+be able to (a) verify an X.509 cert, (b) return the SHA-256 hash of the PDF's
+signed attributes, and (c) embed the resulting CMS as an incremental PAdES
+update — matching the `/dsc/prepare` and `/dsc/finish` contract above.
 
 ---
 
@@ -172,7 +197,7 @@ verifier-side trust decision, **not** a signing defect — `verified: true` from
 
 - [ ] `python3 native-host/selftest.py` passes all 5 stages on each target OS.
 - [ ] `test-page/index.html` shows "bridge detected", lists certs, signs a hash.
-- [ ] Extension loads cleanly (`chrome://extensions`, no errors); v1.3.0.
+- [ ] Extension loads cleanly (`chrome://extensions`, no errors); check `VERSION` file.
 - [ ] Native-host manifest `allowed_origins` matches the loaded extension ID.
 - [ ] Server `DSC_SIGNING_ENABLED=true`; `/dsc/prepare` + `/dsc/finish` reachable.
 - [ ] A completed multi-signer pack opens in **Adobe Acrobat** with a signature

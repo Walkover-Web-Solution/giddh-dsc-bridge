@@ -7,13 +7,14 @@
 # pkgbuild, hdiutil (all ship with macOS + the pip deps installed by CI).
 #
 # Inputs (env):
-#   VERSION        package version         (default: 1.3.0)
+#   VERSION        package version         (default: contents of ../../VERSION)
 #   GIDDH_EXT_ID   published extension ID  (default: contents of ../extension-id.txt)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-VERSION="${VERSION:-1.3.0}"
+DEFAULT_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || echo 1.6.0)"
+VERSION="${VERSION:-$DEFAULT_VERSION}"
 EXT_ID="${GIDDH_EXT_ID:-$(tr -d '[:space:]' < "$ROOT/packaging/extension-id.txt")}"
 HOST_NAME="com.giddh.dsc.bridge"
 INSTALL_DIR="/usr/local/giddh-dsc-bridge"

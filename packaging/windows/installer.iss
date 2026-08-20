@@ -3,13 +3,13 @@
 ; registers it per-user (HKCU) for Chrome/Edge/Brave/Chromium. No admin needed.
 ;
 ; Build (values injected by build_windows.ps1):
-;   iscc /DAppVersion=1.3.0 /DExtId=<published-extension-id> installer.iss
+;   iscc /DAppVersion=1.6.0 /DExtId=<published-extension-id> installer.iss
 
 #ifndef AppVersion
-  #define AppVersion "1.3.0"
+  #define AppVersion "1.6.0"
 #endif
 #ifndef ExtId
-  #define ExtId "REPLACE_WITH_PUBLISHED_EXTENSION_ID"
+  #define ExtId "klmgadogecbimgjkepdljfljajphemfl"
 #endif
 #define HostName "com.giddh.dsc.bridge"
 
@@ -22,6 +22,7 @@ DefaultDirName={localappdata}\Giddh DSC Bridge
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 UninstallDisplayName=Giddh DSC Bridge
+SetupIconFile=..\..\icons\app.ico
 UninstallDisplayIcon={app}\status\giddh-dsc-status.exe
 OutputDir=..\..\dist
 OutputBaseFilename=GiddhDSCBridge-Setup-{#AppVersion}

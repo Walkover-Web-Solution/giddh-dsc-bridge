@@ -12,12 +12,26 @@
 # parse certificates without a system Python.
 
 import os
+import sys
 from PyInstaller.utils.hooks import collect_all
 
 # SPECPATH is injected by PyInstaller; resolve source paths relative to it so
 # the build works regardless of the current working directory.
 HOST_DIR = os.path.abspath(os.path.join(SPECPATH, "..", "..", "dsc-bridge", "native-host"))
 ENTRY = os.path.join(HOST_DIR, "giddh_dsc_host.py")
+ROOT_DIR = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
+
+VERSION_FILE = os.path.join(ROOT_DIR, "VERSION")
+if os.path.exists(VERSION_FILE):
+    with open(VERSION_FILE, "r", encoding="utf-8") as f:
+        APP_VERSION = f.read().strip()
+else:
+    APP_VERSION = os.environ.get("VERSION", "1.6.0")
+
+if sys.platform == "win32":
+    ICON_PATH = os.path.join(ROOT_DIR, "icons", "app.ico")
+else:
+    ICON_PATH = None
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("pkcs11", "cryptography", "cffi", "asn1crypto"):
@@ -66,6 +80,8 @@ exe = EXE(
     target_arch=None,      # CI sets arch per runner; None = host arch
     codesign_identity=None,
     entitlements_file=None,
+    icon=ICON_PATH if ICON_PATH and os.path.exists(ICON_PATH) else None,
+    version=os.path.join(ROOT_DIR, "packaging", "windows", "version_info.txt") if sys.platform == "win32" and os.path.exists(os.path.join(ROOT_DIR, "packaging", "windows", "version_info.txt")) else None,
 )
 
 coll = COLLECT(

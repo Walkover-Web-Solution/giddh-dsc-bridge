@@ -43,12 +43,24 @@
   window.GiddhBridge = {
     isAvailable: function () { return true; },
 
+    // Bump together with manifest.json. Lets a page tell whether the browser
+    // is still running a cached copy of this script after an extension update
+    // (a stale copy is missing whatever was added in the newer version).
+    version: "1.6.0",
+
     getCertificate: function () {
       return _send("getCertificate");
     },
 
     diagnose: function () {
       return _send("diagnose");
+    },
+
+    // Read-only PKCS#11 module inventory. Attaching or pinning a module is
+    // deliberately NOT exposed to the page — that happens only in the desktop
+    // companion app, so a website can never make the host load a library.
+    listModules: function () {
+      return _send("listModules");
     },
 
     signHash: function (hashB64, algorithm, certId, pin) {

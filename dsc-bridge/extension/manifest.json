@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Giddh DSC Bridge",
-  "version": "1.2.0",
+  "version": "1.6.0",
   "description": "Connects Giddh e-signature to hardware DSC tokens via PKCS#11. No per-origin license required.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzF5qHhLb53uXc73gAu6ajlVoOE8xQntxN4kzyk8hEKHX9MK7+XZAIYrLhPpjQJrY5gr4cN11D7CBfORhJXtRvDfHViTZHExa4hIYMrud5VEunfZibAJdP7WmSp2QurFNDIRwTUBPAHBIcSLs9lUZId5a0sZcyZMdcTAwMtUT7RqA+Y7Psw2nrzdel2Ry0uNzcgkV688iMkPeNOVogsxx+fVtOruFWFYP6/uyxVBO1W7OhdEoH11+hDy7BNjTKmvVNwn2VLeUJOqGCbaknSL2oRG/EEZ9p1V+q4Toyeg2ENvc5ZpmuPkjuQudZwMMqsqPFbxyZMAjqpXSp9kfUHKrYwIDAQAB",
   "permissions": ["nativeMessaging"],
@@ -10,7 +10,14 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "https://*.giddh.com/*",
+        "https://*.erpdocs.com/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://localhost/*",
+        "https://127.0.0.1/*"
+      ],
       "js": ["content-script.js"],
       "run_at": "document_idle",
       "all_frames": false
@@ -19,7 +26,14 @@
   "web_accessible_resources": [
     {
       "resources": ["bridge-inject.js"],
-      "matches": ["<all_urls>"]
+      "matches": [
+        "https://*.giddh.com/*",
+        "https://*.erpdocs.com/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://localhost/*",
+        "https://127.0.0.1/*"
+      ]
     }
   ]
 }

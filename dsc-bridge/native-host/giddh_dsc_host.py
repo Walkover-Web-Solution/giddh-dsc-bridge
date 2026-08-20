@@ -38,11 +38,14 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from pkcs11_signer import (
-    Pkcs11Signer,
+    IsolatedSigner,
     Pkcs11Error,
-    list_driver_candidates,
+    WORKER_FLAG,
+    config_path,
     macho_arches,
     python_arch,
+    resolve_driver_paths,
+    worker_main,
 )
 
 _log = sys.stderr
@@ -77,10 +80,64 @@ def _send_message(msg: dict):
     sys.stdout.buffer.flush()
 
 
+# ── Signer lifecycle (config is re-read when it changes) ─────────────────
+# The companion app can attach/pin a PKCS#11 module at any time. The host is a
+# long-lived process (Chrome keeps the port open), so a config read done once at
+# startup would leave the user's new choice inert until the browser restarts.
+# Watching the config file's mtime keeps the two in sync at zero cost.
+
+class _SignerCache:
+    """Rebuilds the signer whenever the shared config file changes."""
+
+    def __init__(self):
+        self._signer = None
+        self._stamp = None
+        self._logged_arch = False
+
+    @staticmethod
+    def _config_stamp():
+        try:
+            st = os.stat(config_path())
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+    def _build(self):
+        paths, preferred, strict = resolve_driver_paths()
+        if preferred:
+            _log_msg(f"Pinned PKCS#11 module: {preferred}"
+                     + (" (strict: no other module will be tried)" if strict else ""))
+        if paths:
+            _log_msg(f"Using {len(paths)} PKCS#11 module(s): "
+                     f"{[os.path.basename(p) for p in paths]}")
+        else:
+            _log_msg("No PKCS#11 driver found. Please install your DSC token's driver.")
+
+        if sys.platform == "darwin" and not self._logged_arch:
+            for p in paths:
+                arches = macho_arches(p)
+                if arches and python_arch() not in arches:
+                    _log_msg(
+                        f"WARNING: driver {os.path.basename(p)} arch {arches} != Python "
+                        f"{python_arch()} — this provider will be skipped at load time."
+                    )
+            self._logged_arch = True
+
+        return IsolatedSigner(paths, preferred=preferred, strict=strict) if paths else None
+
+    def get(self):
+        """Current signer (None when no module is available), rebuilt on change."""
+        stamp = self._config_stamp()
+        if self._signer is None or stamp != self._stamp:
+            self._stamp = stamp
+            self._signer = self._build()
+        return self._signer
+
+
 # ── Request handlers ─────────────────────────────────────────────────────
 
 def _handle_ping() -> dict:
-    return {"success": True, "pong": True, "version": "1.1.0"}
+    return {"success": True, "pong": True, "version": "1.6.0"}
 
 
 # Driver selection/ranking now lives in pkcs11_signer (rank_driver_candidates)
@@ -91,14 +148,29 @@ def _handle_ping() -> dict:
 def _handle_diagnose(signer) -> dict:
     """Return per-provider diagnostics so support can pinpoint token-read failures."""
     try:
-        s = signer or Pkcs11Signer(list_driver_candidates())
+        s = signer or IsolatedSigner.from_config()
         return {"success": True, "diagnostics": s.diagnose()}
     except Exception as e:
         _log_msg(f"diagnose error: {traceback.format_exc()}")
         return {"success": False, "error": str(e), "code": "INTERNAL"}
 
 
-def _handle_get_certificate(signer: Pkcs11Signer) -> dict:
+def _handle_list_modules(signer) -> dict:
+    """Read-only PKCS#11 module inventory.
+
+    Intentionally read-only: attaching or pinning a module is done ONLY in the
+    desktop companion app. Letting a web page name an arbitrary shared library
+    for the host to dlopen would be a code-execution vector.
+    """
+    try:
+        s = signer or IsolatedSigner.from_config()
+        return {"success": True, **s.list_modules()}
+    except Exception as e:
+        _log_msg(f"listModules error: {traceback.format_exc()}")
+        return {"success": False, "error": str(e), "code": "INTERNAL"}
+
+
+def _handle_get_certificate(signer: IsolatedSigner) -> dict:
     try:
         certs = signer.list_certificates()
         if not certs:
@@ -111,10 +183,11 @@ def _handle_get_certificate(signer: Pkcs11Signer) -> dict:
         return {"success": False, "error": str(e), "code": e.code}
     except Exception as e:
         _log_msg(f"getCertificate error: {traceback.format_exc()}")
-        return {"success": False, "error": f"Failed to read certificates: {e}", "code": "INTERNAL"}
+        detail = str(e) or type(e).__name__
+        return {"success": False, "error": f"Failed to read certificates: {detail}", "code": "INTERNAL"}
 
 
-def _handle_sign_hash(signer: Pkcs11Signer, data: dict) -> dict:
+def _handle_sign_hash(signer: IsolatedSigner, data: dict) -> dict:
     hash_b64 = data.get("hash")
     algorithm = data.get("algorithm", "SHA256").upper()
     cert_id = data.get("certId", "")
@@ -132,7 +205,8 @@ def _handle_sign_hash(signer: Pkcs11Signer, data: dict) -> dict:
         return {"success": False, "error": str(e), "code": e.code}
     except Exception as e:
         _log_msg(f"signHash error: {traceback.format_exc()}")
-        return {"success": False, "error": f"Signing failed: {e}", "code": "INTERNAL"}
+        detail = str(e) or type(e).__name__
+        return {"success": False, "error": f"Signing failed: {detail}", "code": "INTERNAL"}
 
 
 # ── Main loop ────────────────────────────────────────────────────────────
@@ -140,44 +214,11 @@ def _handle_sign_hash(signer: Pkcs11Signer, data: dict) -> dict:
 def main():
     _log_msg("Giddh DSC native host started")
 
-    # Auto-detect or load PKCS#11 driver from config.
-    driver_path = None
-    config_path = _get_config_path()
-    if os.path.exists(config_path):
-        try:
-            with open(config_path) as f:
-                cfg = json.load(f)
-                driver_path = cfg.get("pkcs11_driver")
-        except Exception:
-            pass
-
-    # Build the list of providers to try. A machine can have SEVERAL PKCS#11
-    # drivers installed at once (e.g. WatchData for a Capricorn token AND Feitian
-    # for an mToken); we hand the signer ALL of them and let it pick, per
-    # operation, whichever library actually has a token present.
-    if driver_path:
-        driver_paths = [driver_path]
-        _log_msg(f"Using configured PKCS#11 driver: {driver_path}")
-    else:
-        driver_paths = list_driver_candidates()
-        if driver_paths:
-            _log_msg(
-                f"Detected {len(driver_paths)} PKCS#11 driver candidate(s): "
-                f"{[os.path.basename(p) for p in driver_paths]}"
-            )
-        else:
-            _log_msg("No PKCS#11 driver found. Please install your DSC token's driver.")
-
-    if sys.platform == "darwin":
-        for p in driver_paths:
-            arches = macho_arches(p)
-            if arches and python_arch() not in arches:
-                _log_msg(
-                    f"WARNING: driver {os.path.basename(p)} arch {arches} != Python "
-                    f"{python_arch()} — this provider will be skipped at load time."
-                )
-
-    signer = Pkcs11Signer(driver_paths) if driver_paths else None
+    # Providers come from the shared config: auto-detected drivers plus any
+    # module the user attached in the companion app, with an optional pin. The
+    # cache re-reads that config whenever it changes, so attaching a module takes
+    # effect on the very next request instead of after a browser restart.
+    signers = _SignerCache()
 
     while True:
         msg = _read_message()
@@ -189,18 +230,21 @@ def main():
         _log_msg(f"Received action: {action}")
 
         try:
+            signer = signers.get()
             if action == "ping":
                 _send_message(_handle_ping())
             elif action == "diagnose":
                 _send_message(_handle_diagnose(signer))
+            elif action == "listModules":
+                _send_message(_handle_list_modules(signer))
             elif action == "getCertificate":
                 if not signer:
-                    _send_message({"success": False, "error": "No PKCS#11 driver configured. Please install your DSC token driver and restart.", "code": "NO_DRIVER"})
+                    _send_message({"success": False, "error": "No PKCS#11 module available. Install your DSC token driver, or attach the module in the Giddh DSC Bridge app.", "code": "NO_DRIVER"})
                 else:
                     _send_message(_handle_get_certificate(signer))
             elif action == "signHash":
                 if not signer:
-                    _send_message({"success": False, "error": "No PKCS#11 driver configured.", "code": "NO_DRIVER"})
+                    _send_message({"success": False, "error": "No PKCS#11 module available. Install your DSC token driver, or attach the module in the Giddh DSC Bridge app.", "code": "NO_DRIVER"})
                 else:
                     _send_message(_handle_sign_hash(signer, msg))
             else:
@@ -210,17 +254,11 @@ def main():
             _send_message({"success": False, "error": f"Internal error: {e}", "code": "INTERNAL"})
 
 
-def _get_config_path() -> str:
-    """Platform-specific config file path."""
-    home = os.path.expanduser("~")
-    if sys.platform == "darwin":
-        return os.path.join(home, "Library", "Application Support", "Giddh", "dsc-bridge.json")
-    elif sys.platform.startswith("linux"):
-        return os.path.join(home, ".config", "giddh", "dsc-bridge.json")
-    elif sys.platform == "win32":
-        return os.path.join(os.environ.get("APPDATA", home), "Giddh", "dsc-bridge.json")
-    return os.path.join(home, ".giddh", "dsc-bridge.json")
-
-
 if __name__ == "__main__":
+    # Single-driver worker mode. The broker re-launches this same binary with
+    # WORKER_FLAG so that each PKCS#11 library is loaded in its own process and
+    # released on exit. Must be checked BEFORE the native-messaging loop, and
+    # must not write anything to stdout other than the worker's JSON reply.
+    if WORKER_FLAG in sys.argv[1:]:
+        sys.exit(worker_main())
     main()

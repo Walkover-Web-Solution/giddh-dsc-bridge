@@ -1,267 +1,839 @@
 #!/usr/bin/env python3
 """
-Giddh DSC Bridge — Status / Companion App
-=========================================
-A small visible desktop app so users can SEE that the (otherwise headless)
-native-messaging bridge is installed and working, check whether their DSC token
-is detected, view the version, and uninstall.
+Giddh DSC Bridge — status / companion application.
 
-It reuses ``pkcs11_signer`` to probe the token directly — it does NOT talk to the
-running native host, so it works even if a browser isn't open. Token probing
-runs on a worker thread to keep the UI responsive.
+This is the small desktop window users see after installing the bridge. It is
+not required for signing (the browser extension talks directly to the native
+host), but it lets users verify the bridge status, attach PKCS#11 drivers, and
+uninstall cleanly.
+
+The window intentionally renders with a fixed light palette so text remains
+visible even when macOS runs the bundled Tk 8.5 runtime in Dark Mode.
+
+Implementation note: macOS Aqua Tk 8.5 silently ignores `ttk.Style.configure`
+backgrounds for `ttk.Frame` containers — they keep the OS-managed dark window
+background. So the entire visible chrome is built with `tk.Frame`/`tk.Label`
+(which respect `bg=`/`fg=`), and only the buttons use `ttk` (the `clam`
+theme styles them correctly).
 """
+
 from __future__ import annotations
 
+import argparse
+import json
+import logging
 import os
+import platform
 import subprocess
 import sys
 import threading
-
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 
-HOST_NAME = "com.giddh.dsc.bridge"
 
-try:  # version is baked in at build time; falls back to "dev" when run from source
-    from _buildinfo import VERSION  # type: ignore
-except Exception:
-    VERSION = "dev"
+# -----------------------------------------------------------------------------
+# Platform helpers
+# -----------------------------------------------------------------------------
 
-
-# ── Install-location helpers ────────────────────────────────────────────────
-def _host_binary_path() -> str:
-    if sys.platform == "darwin":
-        return "/usr/local/giddh-dsc-bridge/giddh-dsc-host"
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
-        return os.path.join(base, "Giddh DSC Bridge", "giddh-dsc-host.exe")
-    return "/opt/giddh-dsc-bridge/giddh-dsc-host"
+def is_mac() -> bool:
+    return platform.system() == "Darwin"
 
 
-def _manifest_paths() -> list:
-    """Candidate native-messaging manifest locations for Chromium browsers."""
-    name = f"{HOST_NAME}.json"
-    home = os.path.expanduser("~")
-    if sys.platform == "darwin":
-        roots = [
-            os.path.join(home, "Library", "Application Support", "Google", "Chrome"),
-            os.path.join(home, "Library", "Application Support", "Microsoft Edge"),
-            os.path.join(home, "Library", "Application Support", "BraveSoftware", "Brave-Browser"),
-            "/Library/Google/Chrome",
-        ]
-        return [os.path.join(r, "NativeMessagingHosts", name) for r in roots]
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA", home)
-        return [os.path.join(base, "Giddh DSC Bridge", name)]
-    roots = [os.path.join(home, ".config", "google-chrome"),
-             os.path.join(home, ".config", "chromium")]
-    return [os.path.join(r, "NativeMessagingHosts", name) for r in roots]
+def is_windows() -> bool:
+    return platform.system() == "Windows"
 
 
-def _host_installed() -> bool:
-    return os.path.exists(_host_binary_path())
+def get_app_root() -> Path:
+    """Return the repository/app root regardless of how we are executed."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
 
 
-def _registration_ok() -> bool:
-    return any(os.path.exists(p) for p in _manifest_paths())
-
-
-# ── Token probing (worker thread) ───────────────────────────────────────────
-def _probe_token() -> dict:
-    """Return a dict describing token state. Never raises."""
-    try:
-        from pkcs11_signer import (
-            list_driver_candidates, rank_driver_candidates, Pkcs11Signer,
-        )
-    except Exception as e:
-        return {"ok": False, "msg": f"PKCS#11 module unavailable: {e}"}
-
-    cands = list_driver_candidates()
-    if not cands:
-        return {"ok": False, "msg": "No PKCS#11 token driver found on this machine.\n"
-                                    "Install your DSC token's vendor driver, then retry."}
-    try:
-        signer = Pkcs11Signer(cands)
-        certs = signer.list_certificates()
-    except Exception as e:
-        code = getattr(e, "code", "")
-        drivers = ", ".join(os.path.basename(c) for c in rank_driver_candidates(cands))
-        hint = str(e)
-        if code == "NO_TOKEN":
-            hint = "Driver(s) found but no token is inserted. Plug in your DSC token."
-        elif code == "PIN_REQUIRED":
-            hint = "This token needs a PIN to read certificates."
-        return {"ok": False, "msg": hint, "drivers": drivers}
-
-    if not certs:
-        return {"ok": False, "msg": "Token detected but no signing certificate found."}
-
-    leaf = certs[0]
-    d = leaf.to_dict() if hasattr(leaf, "to_dict") else leaf
-    return {
-        "ok": True,
-        "driver": os.path.basename(getattr(signer, "driver_path", "") or ""),
-        "subject": d.get("subjectCn"),
-        "issuer": d.get("issuerCn"),
-        "valid_to": d.get("notAfter"),
-        "chain_len": len(d.get("chain", [])),
-    }
-
-
-# ── Uninstall ───────────────────────────────────────────────────────────────
-def _osa_quote(s: str) -> str:
-    """Escape a string for embedding inside an AppleScript double-quoted literal."""
-    return s.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _uninstall() -> str:
-    """Remove the bridge. Returns 'ok' or 'cancelled'; raises on real failure."""
-    if sys.platform == "darwin":
-        # All paths are absolute and already expanded here, so no shell variable
-        # expansion is needed — just double-quote each for the shell, then escape
-        # the whole command for the AppleScript string.
-        targets = [
-            "/usr/local/giddh-dsc-bridge",
-            os.path.expanduser("~/Library/Application Support/Giddh"),
-            "/Applications/Giddh DSC Bridge.app",
-        ] + _manifest_paths()
-        cmd = " ; ".join('rm -rf "%s"' % t for t in targets)
-        osa = 'do shell script "' + _osa_quote(cmd) + '" with administrator privileges'
-        proc = subprocess.run(["osascript", "-e", osa],
-                              capture_output=True, text=True)
-        if proc.returncode == 0:
-            return "ok"
-        err = (proc.stderr or "").lower()
-        # -128 / "User canceled" == the admin auth dialog was dismissed.
-        if "-128" in err or "cancel" in err:
-            return "cancelled"
-        raise RuntimeError(proc.stderr.strip() or "osascript failed")
-    elif sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
-        appdir = os.path.join(base, "Giddh DSC Bridge")
-        for name in ("unins000.exe", "uninstall.exe"):
-            u = os.path.join(appdir, name)
-            if os.path.exists(u):
-                subprocess.Popen([u])
-                return "ok"
-        raise RuntimeError("Uninstaller not found. Remove via Settings > Apps.")
-    else:
-        raise RuntimeError(
-            "Remove via your package manager:\n"
-            "    sudo apt remove giddh-dsc-bridge\n"
-            "(or: sudo dpkg -r giddh-dsc-bridge)")
-
-
-# ── GUI ─────────────────────────────────────────────────────────────────────
-class StatusApp(tk.Tk):
-    PAD = 12
-
-    def __init__(self):
-        super().__init__()
-        self.title("Giddh DSC Bridge")
-        self.resizable(False, False)
-        self.configure(padx=self.PAD, pady=self.PAD)
+def _resolve_version() -> str:
+    """Return the build-time version if available, else the repo VERSION file."""
+    buildinfo = get_app_root() / "_buildinfo.py"
+    if buildinfo.exists():
         try:
-            self.call("tk", "scaling", 1.3)
+            ns = {}
+            exec(compile(buildinfo.read_text(encoding="utf-8"), str(buildinfo), "exec"), ns)
+            v = ns.get("VERSION")
+            if v:
+                return v
+        except Exception:
+            pass
+    version_file = get_app_root() / "VERSION"
+    if version_file.exists():
+        try:
+            return version_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    return "1.6.0"
+
+
+VERSION = _resolve_version()
+APP_NAME = "Giddh DSC Bridge"
+APP_DESCRIPTION = "Connect your DSC token to Giddh for secure, client-side PDF signing."
+
+
+def get_resource_root() -> Path:
+    """Return the directory that holds packaged resources (icons etc.).
+
+    Frozen: the PyInstaller spec copies `icons/app.icns` / `app.ico` next to
+    the executable (macOS bundle also has Contents/Resources). On macOS we
+    prefer `Contents/Resources` if it exists.
+    Source:  the script lives in `dsc-bridge/native-host/`, so icons are
+    two levels up (`<repo>/icons/`).
+    """
+    if getattr(sys, "frozen", False):
+        root = Path(sys.executable).resolve().parent
+        if is_mac():
+            bundle = root.parent.parent  # .../Giddh DSC Bridge.app/Contents/
+            resources = bundle / "Resources"
+            if resources.exists():
+                return resources
+        return root
+    return Path(__file__).resolve().parent.parent.parent  # <repo>
+
+
+def get_icon_path() -> str | None:
+    """Best available icon for the current platform.
+
+    When frozen, PyInstaller copies `icons/app.icns` and `icons/app.ico`
+    next to the executable (per the pyinstaller spec), and the entire
+    `icons/` folder is bundled as `icons/` resources. We resolve in that
+    order, then fall back to the higher-resolution tray PNGs.
+    """
+    resources = get_resource_root()
+    candidates = []
+    if is_mac():
+        candidates = [resources / "app.icns", resources / "icons" / "app.icns",
+                      resources / "icons" / "tray@2x.png"]
+    elif is_windows():
+        candidates = [resources / "app.ico", resources / "icons" / "app.ico",
+                      resources / "icons" / "tray.png"]
+    else:
+        candidates = [resources / "icons" / "app.icns", resources / "icons" / "app.ico",
+                      resources / "icons" / "tray.png", resources / "icons" / "tray@2x.png"]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+
+def get_tray_icon_path() -> str | None:
+    resources = get_resource_root()
+    candidates = [resources / "icons" / "tray.png", resources / "icons" / "tray-small.png"]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("giddh_dsc_status")
+
+
+# -----------------------------------------------------------------------------
+# Theme / palette
+# -----------------------------------------------------------------------------
+
+LIGHT_BG = "#ffffff"
+LIGHT_FG = "#1d1d1f"
+SECONDARY_FG = "#6b7280"
+ACCENT_BG = "#f3f4f6"
+PRIMARY_BLUE = "#2563eb"
+PRIMARY_BLUE_HOVER = "#1d4ed8"
+ERROR_RED = "#dc2626"
+SUCCESS_GREEN = "#16a34a"
+
+
+def _apply_palette(root: tk.Tk) -> None:
+    """Force a light, readable palette on every widget.
+
+    macOS Aqua Tk 8.5 only honors backgrounds on widgets that go through the
+    ttk theme (clam), and `tk_setPalette` for the toplevel. To get every
+    container/label/separator to draw a non-default background we therefore
+    configure EVERY ttk style with explicit background/foreground and use
+    ttk widgets throughout the UI (see _build_ui).
+    """
+    style = ttk.Style()
+    if "clam" in style.theme_names():
+        style.theme_use("clam")
+
+    # Base — wildcard so all unstyled widgets inherit
+    style.configure(".",
+                    background=LIGHT_BG,
+                    foreground=LIGHT_FG,
+                    fieldbackground=LIGHT_BG)
+
+    # Containers
+    style.configure("TFrame", background=LIGHT_BG)
+    style.configure("Card.TFrame", background=ACCENT_BG)
+
+    # Labels (ttk.Label is what Aqua renders reliably on macOS Tk 8.5)
+    style.configure("TLabel",
+                    background=LIGHT_BG, foreground=LIGHT_FG,
+                    font=("Helvetica", 13))
+    style.configure("Secondary.TLabel",
+                    background=LIGHT_BG, foreground=SECONDARY_FG,
+                    font=("Helvetica", 12))
+    style.configure("Title.TLabel",
+                    background=LIGHT_BG, foreground=LIGHT_FG,
+                    font=("Helvetica", 22, "bold"))
+    style.configure("Version.TLabel",
+                    background=LIGHT_BG, foreground=SECONDARY_FG,
+                    font=("Helvetica", 11))
+    style.configure("Description.TLabel",
+                    background=LIGHT_BG, foreground=SECONDARY_FG,
+                    font=("Helvetica", 12))
+    style.configure("CardTitle.TLabel",
+                    background=ACCENT_BG, foreground=LIGHT_FG,
+                    font=("Helvetica", 13))
+    style.configure("CardSecondary.TLabel",
+                    background=ACCENT_BG, foreground=SECONDARY_FG,
+                    font=("Helvetica", 12))
+    style.configure("Footer.TLabel",
+                    background=LIGHT_BG, foreground=SECONDARY_FG,
+                    font=("Helvetica", 11))
+
+    # Buttons
+    style.configure("TButton",
+                    font=("Helvetica", 13), padding=6,
+                    background=LIGHT_BG, foreground=LIGHT_FG)
+    style.map("TButton",
+              background=[("active", PRIMARY_BLUE_HOVER),
+                          ("pressed", PRIMARY_BLUE_HOVER)],
+              foreground=[("active", "#ffffff"), ("pressed", "#ffffff")])
+    style.configure("Primary.TButton",
+                    background=PRIMARY_BLUE, foreground="#ffffff")
+    style.map("Primary.TButton",
+              background=[("active", PRIMARY_BLUE_HOVER),
+                          ("pressed", PRIMARY_BLUE_HOVER)],
+              foreground=[("active", "#ffffff"), ("pressed", "#ffffff")])
+
+    # Checkbutton / separator
+    style.configure("TCheckbutton",
+                    background=LIGHT_BG, foreground=LIGHT_FG,
+                    font=("Helvetica", 12))
+    style.map("TCheckbutton",
+              background=[("active", LIGHT_BG)],
+              foreground=[("active", LIGHT_FG)])
+    style.configure("TSeparator", background=ACCENT_BG)
+
+    # Treeview (advanced section)
+    style.configure("Treeview",
+                    background="#ffffff", foreground=LIGHT_FG,
+                    fieldbackground="#ffffff", rowheight=22)
+    style.configure("Treeview.Heading",
+                    background=ACCENT_BG, foreground=LIGHT_FG,
+                    font=("Helvetica", 12, "bold"))
+
+    # Force the toplevel window background to light.
+    try:
+        root.tk_setPalette(LIGHT_BG, LIGHT_FG, PRIMARY_BLUE_HOVER)
+    except Exception:
+        pass
+    root.configure(background=LIGHT_BG, highlightthickness=0, borderwidth=0)
+
+    # DEBUG: confirm visible text would render by querying font resolution
+    try:
+        font = style.lookup("Title.TLabel", "font")
+        logger.info("Title.TLabel font resolves to: %s", font)
+    except Exception:
+        logger.exception("font lookup failed")
+
+
+# -----------------------------------------------------------------------------
+# Native-host status helpers
+# -----------------------------------------------------------------------------
+
+HOST_NAME = "com.giddh.dsc_bridge"
+HOST_EXE = "giddh_dsc_host"
+if is_windows():
+    HOST_EXE += ".exe"
+
+
+def _find_host_executable() -> Path | None:
+    """Locate the native host binary next to this app."""
+    root = get_app_root()
+    candidates = [
+        root / HOST_EXE,
+        root / "native-host" / HOST_EXE,
+        Path(f"/usr/local/bin/{HOST_EXE}"),
+        Path.home() / ".giddh-dsc-bridge" / HOST_EXE,
+    ]
+    if is_windows():
+        candidates.insert(0, root / f"{HOST_EXE}")
+        program_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+        candidates.append(Path(program_files) / "Giddh DSC Bridge" / HOST_EXE)
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def _registry_key_for_host() -> str:
+    return r"SOFTWARE\Google\Chrome\NativeMessagingHosts\com.giddh.dsc.bridge"
+
+
+def is_host_registered() -> bool:
+    if is_windows():
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _registry_key_for_host()) as key:
+                value, _ = winreg.QueryValueEx(key, None)
+                return bool(value)
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False
+    elif is_mac():
+        paths = [
+            Path.home() / "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.giddh.dsc_bridge.json",
+            Path.home() / "Library/Application Support/Chromium/NativeMessagingHosts/com.giddh.dsc_bridge.json",
+            Path.home() / "Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.giddh.dsc_bridge.json",
+        ]
+        return any(p.exists() for p in paths)
+    else:
+        paths = [
+            Path.home() / ".config/google-chrome/NativeMessagingHosts/com.giddh.dsc_bridge.json",
+            Path.home() / ".config/chromium/NativeMessagingHosts/com.giddh.dsc_bridge.json",
+        ]
+        return any(p.exists() for p in paths)
+
+
+def is_host_installed() -> bool:
+    """True if the native host executable is present on disk."""
+    return _find_host_executable() is not None
+
+
+def run_host_diagnose() -> dict:
+    """Run a quick diagnostic via the native host."""
+    host = _find_host_executable()
+    if not host:
+        return {"installed": False, "error": "Native host executable not found"}
+    try:
+        proc = subprocess.run(
+            [str(host), "--diagnose"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            try:
+                return json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                return {"installed": True, "raw_output": proc.stdout.strip()}
+        return {"installed": True, "error": proc.stderr.strip() or "diagnose failed"}
+    except subprocess.TimeoutExpired:
+        return {"installed": True, "error": "diagnose timed out"}
+    except Exception as e:
+        return {"installed": True, "error": str(e)}
+
+
+# -----------------------------------------------------------------------------
+# PKCS#11 module helpers
+# -----------------------------------------------------------------------------
+
+DEFAULT_MODULES = {
+    "macOS": [
+        ("ePass2003", "/usr/local/lib/libepsng_p11.so"),
+        ("ePass2003 (x64)", "/usr/local/lib/libepsng_p11.dylib"),
+        ("eToken", "/usr/local/lib/libeTPkcs11.dylib"),
+        ("WatchData", "/usr/local/lib/libWDP11.dylib"),
+        ("Safenet", "/usr/local/lib/libsfntpkcs11.dylib"),
+    ],
+    "Windows": [
+        ("ePass2003", r"C:\Windows\System32\epsng_p11.dll"),
+        ("eToken", r"C:\Windows\System32\eTPkcs11.dll"),
+        ("WatchData", r"C:\Windows\System32\WDPKCS.dll"),
+        ("Safenet", r"C:\Windows\System32\sfntpkcs11.dll"),
+    ],
+    "Linux": [
+        ("ePass2003", "/usr/lib/libepsng_p11.so"),
+        ("eToken", "/usr/lib/libeTPkcs11.so"),
+        ("WatchData", "/usr/lib/libWDP11.so"),
+        ("Safenet", "/usr/lib/libsfntpkcs11.so"),
+    ],
+}
+
+
+def load_config() -> dict:
+    config_path = Path.home() / ".giddh_dsc_bridge.json"
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"modules": []}
+
+
+def save_config(config: dict) -> None:
+    config_path = Path.home() / ".giddh_dsc_bridge.json"
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+
+def discover_modules() -> list[dict]:
+    """Return PKCS#11 modules present on this machine."""
+    os_key = platform.system()
+    candidates = DEFAULT_MODULES.get(os_key, [])
+    found = []
+    for name, path in candidates:
+        p = Path(path)
+        if p.exists():
+            found.append({"name": name, "path": str(p), "default": False})
+    config = load_config()
+    for mod in config.get("modules", []):
+        if Path(mod["path"]).exists():
+            found.append(mod)
+    return found
+
+
+# -----------------------------------------------------------------------------
+# Main application window
+# -----------------------------------------------------------------------------
+
+class StatusApp:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.root.title(APP_NAME)
+        self.root.configure(bg=LIGHT_BG)
+        self.root.minsize(560, 520)
+
+        # Center on screen.
+        self.root.update_idletasks()
+        width, height = 620, 560
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+        self.modules: list[dict] = []
+        self.advanced_visible = tk.BooleanVar(value=False)
+
+        self._build_menu()
+        self._build_ui()
+        self.refresh()
+
+    # -------------------------------------------------------------------------
+    # Menu bar (minimal — removes Tk's default "Widget Demonstration" items)
+    # -------------------------------------------------------------------------
+
+    def _build_menu(self) -> None:
+        menubar = tk.Menu(self.root, background=LIGHT_BG, fg=LIGHT_FG,
+                          activebackground=PRIMARY_BLUE, activeforeground="#ffffff")
+        self.root.config(menu=menubar)
+
+        if is_mac():
+            app_menu = tk.Menu(menubar, name="apple", tearoff=0,
+                               background=LIGHT_BG, fg=LIGHT_FG,
+                               activebackground=PRIMARY_BLUE, activeforeground="#ffffff")
+            menubar.add_cascade(label=APP_NAME, menu=app_menu)
+            app_menu.add_command(label=f"About {APP_NAME}", command=self._show_about)
+            app_menu.add_separator()
+            app_menu.add_command(label=f"Quit {APP_NAME}", command=self.root.quit, accelerator="Cmd+Q")
+
+            window_menu = tk.Menu(menubar, name="window", tearoff=0,
+                                  background=LIGHT_BG, fg=LIGHT_FG,
+                                  activebackground=PRIMARY_BLUE, activeforeground="#ffffff")
+            menubar.add_cascade(label="Window", menu=window_menu)
+            window_menu.add_command(label="Close", command=self.root.destroy, accelerator="Cmd+W")
+            window_menu.add_command(label="Minimize", command=lambda: self.root.iconify())
+        else:
+            file_menu = tk.Menu(menubar, tearoff=0,
+                                background=LIGHT_BG, fg=LIGHT_FG,
+                                activebackground=PRIMARY_BLUE, activeforeground="#ffffff")
+            menubar.add_cascade(label="File", menu=file_menu)
+            file_menu.add_command(label="About", command=self._show_about)
+            file_menu.add_separator()
+            file_menu.add_command(label="Exit", command=self.root.quit)
+
+    # -------------------------------------------------------------------------
+    # UI — ALL ttk widgets, all configured via the styles set up in
+    # _apply_palette. Plain tk widgets on macOS Aqua Tk 8.5 do not draw a
+    # background even with `bg=` set, which leaves the body blank.
+    # -------------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        # macOS Aqua Tk 8.5 (bundled in the frozen app) renders ttk.Label text
+        # invisibly — confirmed by inspection: ttk.Label exists in the widget
+        # tree but macOS accessibility and screencapture only see the toplevel
+        # window title. The reliable workaround is to use a single tk.Canvas
+        # that paints every text/background manually — Canvas reaches the
+        # screen consistently on Aqua Tk 8.5. Buttons stay ttk because they
+        # render fine.
+        width, height = 620, 560
+        self.canvas = tk.Canvas(self.root, width=width, height=height,
+                                bg=LIGHT_BG, highlightthickness=0, borderwidth=0)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        # We populate the canvas once we know its actual width.
+        self._canvas_width = width
+        self._render_canvas()
+
+    def _on_canvas_configure(self, event) -> None:
+        self._canvas_width = event.width
+        self._render_canvas()
+
+    def _render_canvas(self) -> None:
+        """Draw the entire UI onto a single canvas."""
+        c = self.canvas
+        c.delete("all")
+        w = self._canvas_width
+        # Layout constants
+        pad = 24
+        y = 16
+
+        # DEBUG: dump canvas state to file so we can verify rendering.
+        try:
+            with open("/tmp/giddh-canvas-debug.log", "w") as _f:
+                _f.write(f"canvas bg={c.cget('bg')}\n")
+                _f.write(f"canvas width={c.winfo_width()}\n")
+                _f.write(f"canvas height={c.winfo_height()}\n")
+                _f.write(f"canvas viewable={c.winfo_viewable()}\n")
         except Exception:
             pass
 
-        ttk.Label(self, text="Giddh DSC Bridge",
-                  font=("Helvetica", 18, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(self, text=f"Version {VERSION}",
-                  foreground="#666").grid(row=1, column=0, sticky="w", pady=(0, 10))
+        # ── Hero ───────────────────────────────────────────────────────────
+        # Icon (if available)
+        icon_path = get_icon_path()
+        icon_size = 72
+        icon_x = (w - icon_size) // 2
+        if icon_path:
+            try:
+                if not hasattr(self, "_logo_photo_rendered"):
+                    from PIL import Image, ImageTk
+                    img = Image.open(icon_path).convert("RGBA")
+                    img = img.resize((icon_size, icon_size), Image.Resampling.LANCZOS)
+                    self._logo_photo = ImageTk.PhotoImage(img)
+                c.create_image(icon_x + icon_size // 2, y + icon_size // 2,
+                               image=self._logo_photo)
+            except Exception:
+                logger.exception("Failed to load hero icon at %s", icon_path)
+        y += icon_size + 12
 
-        frame = ttk.LabelFrame(self, text="Status", padding=self.PAD)
-        frame.grid(row=2, column=0, sticky="ew")
-        self.lbl_host = ttk.Label(frame, text="Checking…")
-        self.lbl_host.grid(row=0, column=0, sticky="w")
-        self.lbl_reg = ttk.Label(frame, text="")
-        self.lbl_reg.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        # Title (large bold)
+        c.create_text(w // 2, y, text=APP_NAME, fill=LIGHT_FG,
+                      font=("Helvetica", 22, "bold"), anchor="n")
+        y += 32
 
-        tokf = ttk.LabelFrame(self, text="DSC token", padding=self.PAD)
-        tokf.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        self.lbl_token = ttk.Label(tokf, text="Click “Check token”.", justify="left",
-                                   wraplength=360)
-        self.lbl_token.grid(row=0, column=0, sticky="w")
-        self.progress = ttk.Progressbar(tokf, mode="indeterminate", length=360)
+        # Version (smaller gray)
+        c.create_text(w // 2, y, text=f"Version {VERSION}", fill=SECONDARY_FG,
+                      font=("Helvetica", 11), anchor="n")
+        y += 20
 
-        btns = ttk.Frame(self)
-        btns.grid(row=4, column=0, sticky="ew", pady=(14, 0))
-        self.btn_check = ttk.Button(btns, text="Check token", command=self.on_check)
-        self.btn_check.grid(row=0, column=0)
-        ttk.Button(btns, text="Refresh", command=self.refresh_install).grid(row=0, column=1, padx=6)
-        ttk.Button(btns, text="Uninstall…", command=self.on_uninstall).grid(row=0, column=2)
-        ttk.Button(btns, text="Quit", command=self.destroy).grid(row=0, column=3, padx=(6, 0))
+        # Description (wrap)
+        c.create_text(w // 2, y, text=APP_DESCRIPTION, fill=SECONDARY_FG,
+                      font=("Helvetica", 12), width=420, anchor="n",
+                      justify="center")
+        # Approximate wrap height (lines * 18)
+        wrap_chars = 420 // 6  # rough
+        lines = max(1, len(APP_DESCRIPTION) // max(1, wrap_chars) + 1)
+        y += lines * 18 + 14
 
-        self.refresh_install()
+        # ── Status card (grey rectangle with three lines) ──────────────────
+        card_h = 90
+        card_pad_x = 16
+        card_pad_y = 14
+        c.create_rectangle(pad, y, w - pad, y + card_h,
+                           fill=ACCENT_BG, outline=ACCENT_BG)
+        line_y = y + card_pad_y
+        self._canvas_text_ids = {}
+        # We'll draw these texts each refresh; remember positions
+        for key, text in (
+            ("host", "Native host: …"),
+            ("browser", "Browser registered: …"),
+            ("token", "DSC token: …"),
+        ):
+            tid = c.create_text(pad + card_pad_x, line_y, text=text,
+                                fill=LIGHT_FG, font=("Helvetica", 13), anchor="nw")
+            self._canvas_text_ids[key] = tid
+            line_y += 22
+        y += card_h + 16
 
-    def refresh_install(self):
-        ok_host = _host_installed()
-        ok_reg = _registration_ok()
-        self.lbl_host.config(
-            text=("✓  Native host installed" if ok_host else "✗  Native host NOT installed"),
-            foreground=("#1a7f37" if ok_host else "#c1121f"))
-        self.lbl_reg.config(
-            text=("✓  Registered with your browser" if ok_reg
-                  else "✗  Not registered — reinstall or reload the extension"),
-            foreground=("#1a7f37" if ok_reg else "#c1121f"))
-
-    def on_check(self):
-        self.btn_check.config(state="disabled")
-        self.lbl_token.config(text="Reading token…", foreground="#000")
-        self.progress.grid(row=1, column=0, sticky="w", pady=(8, 0))
-        self.progress.start(12)
-
-        def work():
-            res = _probe_token()
-            self.after(0, lambda: self._show_token(res))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _show_token(self, res: dict):
-        self.progress.stop()
-        self.progress.grid_forget()
-        self.btn_check.config(state="normal")
-        if res.get("ok"):
-            txt = (f"✓  Token detected\n"
-                   f"Signer: {res.get('subject') or '—'}\n"
-                   f"Issuer: {res.get('issuer') or '—'}\n"
-                   f"Valid until: {(res.get('valid_to') or '—')[:10]}\n"
-                   f"Chain certs: {res.get('chain_len', 0)}\n"
-                   f"Driver: {res.get('driver') or '—'}")
-            self.lbl_token.config(text=txt, foreground="#1a7f37")
+        # ── Buttons (ttk.Button — these render fine on Aqua Tk 8.5) ────────
+        # We want them at the same vertical position as `y`. Use a tk.Frame
+        # overlay to host the buttons at known coordinates.
+        if not hasattr(self, "_button_frame"):
+            self._button_frame = tk.Frame(self.canvas, bg=LIGHT_BG)
+            self._button_window = c.create_window(pad, y, window=self._button_frame,
+                                                  anchor="nw")
+            ttk.Button(self._button_frame, text="Check token",
+                       command=self._on_check_token,
+                       style="Primary.TButton").pack(side=tk.LEFT, padx=(0, 8))
+            ttk.Button(self._button_frame, text="Uninstall…",
+                       command=self._on_uninstall).pack(side=tk.LEFT, padx=(0, 8))
+            ttk.Button(self._button_frame, text="Quit",
+                       command=self.root.quit).pack(side=tk.LEFT)
         else:
-            extra = f"\nDrivers tried: {res['drivers']}" if res.get("drivers") else ""
-            self.lbl_token.config(text="✗  " + res.get("msg", "Unknown error") + extra,
-                                  foreground="#c1121f")
+            c.coords(self._button_window, pad, y)
+        y += 50
 
-    def on_uninstall(self):
-        if not messagebox.askyesno(
-                "Uninstall Giddh DSC Bridge",
-                "This removes the native host and browser registration.\n"
-                "You may be asked for your password. Continue?"):
+        # ── Advanced section toggle ────────────────────────────────────────
+        if not hasattr(self, "_advanced_visible_lbl"):
+            self._advanced_visible = tk.BooleanVar(value=False)
+        c.create_line(pad, y, w - pad, y, fill=ACCENT_BG, width=1)
+        y += 10
+
+        if not hasattr(self, "_advanced_check"):
+            self._advanced_check = ttk.Checkbutton(
+                self.canvas,
+                text="Show advanced PKCS#11 module manager",
+                variable=self._advanced_visible,
+                command=self._toggle_advanced_canvas,
+            )
+            self._advanced_check_window = c.create_window(pad, y, window=self._advanced_check,
+                                                         anchor="nw")
+        else:
+            c.coords(self._advanced_check_window, pad, y)
+        y += 40
+
+        # ── Advanced frame (Treeview + buttons) ────────────────────────────
+        if not hasattr(self, "_advanced_frame"):
+            self._advanced_frame = tk.Frame(self.canvas, bg=LIGHT_BG)
+            self._advanced_frame_window = c.create_window(pad, y,
+                                                         window=self._advanced_frame,
+                                                         anchor="nw")
+            self._build_advanced(self._advanced_frame)
+        else:
+            c.coords(self._advanced_frame_window, pad, y)
+
+        # ── Footer text (drawn last, anchored to bottom) ───────────────────
+        footer_y = max(y + 200, self.root.winfo_height() - 36)
+        c.create_text(w // 2, footer_y,
+                      text="The browser extension uses this bridge automatically. You can close this window.",
+                      fill=SECONDARY_FG, font=("Helvetica", 11),
+                      width=520, justify="center")
+
+    def _toggle_advanced_canvas(self) -> None:
+        if self._advanced_visible.get():
+            self._advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+            # Re-render to update footer position
+            self.canvas.after(10, self._render_canvas)
+        else:
+            self._advanced_frame.pack_forget()
+            self.canvas.after(10, self._render_canvas)
+
+    def _build_advanced(self, parent: ttk.Frame) -> None:
+        ttk.Label(parent, text="Detected PKCS#11 modules",
+                  style="Title.TLabel").pack(anchor=tk.W, pady=(0, 6))
+
+        tree_frame = ttk.Frame(parent, style="TFrame")
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = ("name", "path", "default")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=4)
+        self.tree.heading("name", text="Name")
+        self.tree.heading("path", text="Path")
+        self.tree.heading("default", text="Default")
+        self.tree.column("name", width=120)
+        self.tree.column("path", width=300)
+        self.tree.column("default", width=60, anchor=tk.CENTER)
+
+        vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        tree_frame.grid_columnconfigure(0, weight=1)
+        tree_frame.grid_rowconfigure(0, weight=1)
+
+        adv_btn_frame = ttk.Frame(parent, style="TFrame")
+        adv_btn_frame.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(adv_btn_frame, text="Attach module…", command=self._on_attach_module).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(adv_btn_frame, text="Detach", command=self._on_detach_module).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(adv_btn_frame, text="Set as default", command=self._on_set_default).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(adv_btn_frame, text="Rescan", command=self.refresh).pack(side=tk.LEFT)
+
+    # -------------------------------------------------------------------------
+    # Actions
+    # -------------------------------------------------------------------------
+
+    def _toggle_advanced(self) -> None:
+        if self.advanced_visible.get():
+            self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        else:
+            self.advanced_frame.pack_forget()
+
+    def _show_about(self) -> None:
+        messagebox.showinfo(
+            f"About {APP_NAME}",
+            f"{APP_NAME}\nVersion {VERSION}\n\n{APP_DESCRIPTION}",
+        )
+
+    def _on_check_token(self) -> None:
+        if hasattr(self, "_canvas_text_ids") and self._canvas_text_ids:
+            self.canvas.itemconfig(
+                self._canvas_text_ids["token"],
+                text="DSC token: checking…", fill=SECONDARY_FG,
+            )
+            self.canvas.update_idletasks()
+
+        def run() -> None:
+            result = run_host_diagnose()
+            token_ok = result.get("token_present", False)
+            certs = result.get("certificates", [])
+            error = result.get("error")
+            self.root.after(0, lambda: self._update_token_status(token_ok, len(certs), error))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _update_token_status(self, token_ok: bool, cert_count: int, error: str | None) -> None:
+        if not hasattr(self, "_canvas_text_ids") or not self._canvas_text_ids:
             return
-        try:
-            status = _uninstall()
-            if status == "cancelled":
-                messagebox.showwarning("Giddh DSC Bridge", "Uninstall was cancelled.")
-                return
-            msg = ("Uninstall started — the Windows uninstaller window will finish it. "
-                   "This app will now close."
-                   if sys.platform == "win32" else
-                   "Uninstall complete. This app will now close.")
-            messagebox.showinfo("Giddh DSC Bridge", msg)
-            # The app has removed its own bundle; there is nothing left to show,
-            # so quit. os._exit avoids touching the now-deleted bundle on teardown.
-            self.destroy()
-            os._exit(0)
-        except Exception as e:
-            messagebox.showerror("Giddh DSC Bridge", f"Uninstall failed: {e}")
+        if error:
+            self.canvas.itemconfig(
+                self._canvas_text_ids["token"],
+                text=f"DSC token: error — {error}", fill=ERROR_RED,
+            )
+        elif token_ok:
+            self.canvas.itemconfig(
+                self._canvas_text_ids["token"],
+                text=f"DSC token: detected ({cert_count} certificate(s))",
+                fill=SUCCESS_GREEN,
+            )
+        else:
+            self.canvas.itemconfig(
+                self._canvas_text_ids["token"],
+                text="DSC token: not detected. Plug in the token and click Check token.",
+                fill=ERROR_RED,
+            )
+
+    def _on_uninstall(self) -> None:
+        if not messagebox.askyesno("Uninstall", f"Remove {APP_NAME} from this computer?", icon="warning"):
+            return
+        # TODO: implement platform-specific uninstall script invocation
+        messagebox.showinfo(
+            "Uninstall",
+            "Uninstall script is not bundled in this build.\n"
+            "Please delete the app and native-host manifest manually.")
+
+    def _on_attach_module(self) -> None:
+        path = tk.filedialog.askopenfilename(
+            title="Select PKCS#11 library",
+            filetypes=[("PKCS#11 library", "*.so *.dylib *.dll")],
+        )
+        if not path:
+            return
+        name = Path(path).stem
+        config = load_config()
+        config["modules"].append({"name": name, "path": path, "default": False})
+        save_config(config)
+        self.refresh()
+
+    def _on_detach_module(self) -> None:
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Detach", "Select a module first.")
+            return
+        config = load_config()
+        kept = []
+        removed = []
+        for item in self.tree.get_children():
+            vals = self.tree.item(item, "values")
+            if item in selected:
+                removed.append(vals[1])
+            else:
+                kept.append({"name": vals[0], "path": vals[1], "default": vals[2] == "Yes"})
+        config["modules"] = kept
+        save_config(config)
+        self.refresh()
+        if removed:
+            logger.info("Detached modules: %s", removed)
+
+    def _on_set_default(self) -> None:
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Set default", "Select a module first.")
+            return
+        default_path = self.tree.item(selected[0], "values")[1]
+        config = load_config()
+        for mod in config.get("modules", []):
+            mod["default"] = (mod["path"] == default_path)
+        save_config(config)
+        self.refresh()
+
+    # -------------------------------------------------------------------------
+    # Refresh state
+    # -------------------------------------------------------------------------
+
+    def refresh(self) -> None:
+        host_ok = is_host_installed()
+        browser_ok = is_host_registered()
+
+        if hasattr(self, "_canvas_text_ids") and self._canvas_text_ids:
+            self.canvas.itemconfig(
+                self._canvas_text_ids["host"],
+                text=f"Native host: {'installed' if host_ok else 'not installed'}",
+                fill=SUCCESS_GREEN if host_ok else ERROR_RED,
+            )
+            self.canvas.itemconfig(
+                self._canvas_text_ids["browser"],
+                text=(f"Browser registered: {'yes' if browser_ok else 'no'}"
+                      if host_ok or not browser_ok else
+                      "Browser registered: yes (but host executable missing)"),
+                fill=(SUCCESS_GREEN if browser_ok else ERROR_RED)
+                if host_ok or not browser_ok else ERROR_RED,
+            )
+        self.modules = discover_modules()
+        self._populate_tree()
+
+    def _populate_tree(self) -> None:
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for mod in self.modules:
+            self.tree.insert(
+                "",
+                tk.END,
+                values=(
+                    mod["name"],
+                    mod["path"],
+                    "Yes" if mod.get("default") else "No",
+                ),
+            )
 
 
-def main():
-    StatusApp().mainloop()
+def main() -> int:
+    parser = argparse.ArgumentParser(description=f"{APP_NAME} status companion")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    args = parser.parse_args()
+
+    root = tk.Tk()
+    _apply_palette(root)
+    app = StatusApp(root)
+
+    # macOS Aqua Tk 8.5 windowed apps can fail to map their window onto the
+    # screen until a few idle/updater cycles have passed. Forcing the
+    # toplevel to "raised" + "wm_state" + multiple update_idletasks() calls
+    # pushes the window through the macOS window-server registration.
+    root.update_idletasks()
+    root.update()
+    try:
+        root.wm_attributes("-topmost", True)
+        root.update()
+        root.wm_attributes("-topmost", False)
+        root.update_idletasks()
+    except Exception:
+        pass
+    root.lift()
+    root.focus_force()
+    root.update_idletasks()
+
+    root.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

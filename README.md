@@ -20,7 +20,13 @@ dsc-bridge/
     pkcs11_signer.py      multi-vendor PKCS#11 driver resolution + signing
   test-page/     a standalone page to test token read + sign
 packaging/       builds the end-user installers (.dmg / .exe / .deb)
+  pyinstaller/   PyInstaller specs for the host + status app
+  windows/       Inno Setup installer + signing-ready build scripts
 dist/            build output
+docs/            WINDOWS_SIGNING.md and other reference docs
+icons/            all app icon assets in one folder (see `PROJECT.md` §7)
+VERSION          single source of truth for the app version
+PROJECT.md       one-file project guide for AI agents / new contributors
 giddh-extension-key.pem   SECRET signing key → the fixed extension ID (gitignored)
 INTEGRATION.md   API contract for the Giddh web app + backend
 ```
@@ -50,12 +56,12 @@ installer build works on any computer** — no per-machine ID copying.
 
 You receive two things (shared separately):
 
-1. **`GiddhDSCBridge-Setup-1.3.0.exe`** — the Windows installer.
+1. **`GiddhDSCBridge-Setup-1.6.0.exe`** — the Windows installer.
 2. **`dsc-bridge/extension/`** — the browser extension folder.
 
 ### Windows (no admin required)
 
-1. **Run the installer** `GiddhDSCBridge-Setup-1.3.0.exe`. It is **unsigned**, so
+1. **Run the installer** `GiddhDSCBridge-Setup-1.6.0.exe`. It is **unsigned**, so
    Windows SmartScreen may warn → click **More info → Run anyway**.
 2. **Load the extension:** `chrome://extensions` → enable **Developer mode**
    (top-right) → **Load unpacked** → select the `dsc-bridge/extension/` folder.
@@ -65,14 +71,14 @@ You receive two things (shared separately):
    common vendors (WatchData/ProxKey/Capricorn, SafeNet/eToken, Feitian
    ePass2003, Longmai mToken, IDEMIA/IDPrime) — it probes each installed driver
    and uses the first with a token present.
-4. **Test:** open `dsc-bridge/test-page/index.html` (or any page — this is a
-   testing build), read the certificate, and sign. Only your **signing**
+4. **Test:** open `dsc-bridge/test-page/index.html`, or a page on `giddh.com`
+   / `localhost`, read the certificate, and sign. Only your **signing**
    certificate is listed (CA certs are filtered out); its issuing chain is sent
    to the server so Adobe can build the full trust path.
 
 ### macOS
 
-1. **Open** `GiddhDSCBridge-1.3.0.dmg`, then run the `.pkg` inside. It is
+1. **Open** `GiddhDSCBridge-1.6.0.dmg`, then run the `.pkg` inside. It is
    **unsigned**, so Gatekeeper blocks a normal double-click → **right-click the
    `.pkg` → Open → Open** to run it anyway.
 2. **Load the extension** and **plug in the token** — same as Windows steps 2–3
@@ -90,43 +96,83 @@ also ships a small visible companion app, **Giddh DSC Bridge**:
 - **Windows:** Start-menu shortcut **Giddh DSC Bridge** (optional desktop icon).
 - **Linux:** app-menu entry **Giddh DSC Bridge** (`.desktop`).
 
-It shows the installed version, whether the host is installed and registered
-with the browser, a **Check token** button (detects the inserted token and its
-signing certificate), and an **Uninstall** button that cleanly removes the bridge
-(prompts for admin where required, then closes itself).
+It opens to a centered welcome screen showing the app name, installed
+version, and a short description, followed by a live status card (native
+host installed?, registered with the browser?, DSC token detected?), a
+**Check token** button, and an **Uninstall…** button. A collapsed **advanced**
+section exposes the PKCS#11 module manager below for the rare cases that need it.
+
+### PKCS#11 modules and tokens (advanced)
+
+Modules are detected automatically, so most users never touch this. When
+auto-detection is not enough — a driver installed in a non-standard path, or
+several vendor middlewares fighting over one machine — expand **Show advanced
+PKCS#11 module manager** in the companion app for the same controls as Adobe
+Acrobat's *Digital ID and Trusted Certificate Settings → PKCS#11 Modules and
+Tokens* pane:
+
+| Control | Effect |
+| --- | --- |
+| **Attach module…** | Pick a PKCS#11 library (`.dylib` / `.so` / `.dll`) and add it to the list. Validated for existence, extension, and CPU architecture before it is saved. |
+| **Detach** | Remove a module *you* attached. Auto-detected modules cannot be detached. |
+| **Set as default** | Pin a module so it is always tried first. |
+| **Rescan** | Re-probe every module and refresh the table. |
+
+Each row shows the module's manufacturer, library and Cryptoki version, and its
+live token state. Above the table, a **Card** line reports what the smartcard
+layer (PC/SC) sees — independently of any module. That distinction matters: a
+module that cannot drive your card reports "token not present" or "token not
+recognised" even when the card is inserted and completely free, so module error
+codes are **not** evidence about the card.
+
+Choices are stored in `dsc-bridge.json` (macOS
+`~/Library/Application Support/Giddh/`, Windows `%APPDATA%\Giddh\`, Linux
+`~/.config/giddh/`) and are picked up by the host on the **next request** — no
+browser restart needed. Attaching and pinning are available **only** in the
+desktop app: the web-facing API exposes a read-only `listModules()` so that a
+web page can never make the host load an arbitrary library.
 
 **Troubleshooting**
 
 - *"Access to the native messaging host is forbidden"* → the loaded extension ID
   doesn't match the installer's. Confirm it is `klmgadogecbimgjkepdljfljajphemfl`.
-- *"No PKCS#11 driver found"* → install the token's 64-bit vendor driver, then
-  reopen the companion app and click **Check token**.
+- *"No PKCS#11 module available"* → install the token's 64-bit vendor driver, or
+  attach its module in the companion app, then click **Check token**.
+- *"A card is inserted … but no PKCS#11 module could open it"* (code
+  `TOKEN_UNSUPPORTED_BY_MODULE`) → the card is present and **not** locked; the
+  PKCS#11 library for that token is missing or is the wrong one. Install your DSC
+  vendor's PKCS#11 library and attach it. If the token already works in Adobe
+  Acrobat, open Acrobat's *Digital ID and Trusted Certificate Settings → PKCS#11
+  Modules and Tokens* and attach the **exact same library path** here. Beware:
+  some vendor tools (e.g. HyperPKI/EnterSafe Manager) drive the token over raw
+  USB/IOKit instead of PKCS#11, so "it works in the vendor's own tool" does not
+  prove a usable PKCS#11 module exists on the machine.
+- *"holds a card that could not be opened … holding it exclusively"* (code
+  `TOKEN_BUSY_OR_ABSENT`) → raised **only** when PC/SC actually reports a sharing
+  violation, i.e. another process really does hold the card. Quit Adobe Acrobat
+  (including its background *Adobe Acrobat Helper*), vendor token managers and
+  other browsers, re-insert the token, and retry.
 - *macOS: driver found but token not recognised* → some vendor drivers ship a
   dylib **inside** an app bundle that macOS Library Validation blocks from being
   loaded by another process. The host works around this by copying the driver to
   `~/Library/Application Support/Giddh/drivers/` and loading the copy; no action
   needed.
 - *Installer won't open / silent* → SmartScreen (unsigned build): **More info →
-  Run anyway**. Code-signing is the production TODO that removes this.
+  Run anyway**. Windows signing is wired up but inactive until credentials are
+  added — see `docs/WINDOWS_SIGNING.md`.
 
-> **Note (test build):** this build accepts **any** page origin so it can be
-> tested anywhere. Before a production release, lock the domains — see below.
+## Domain restriction — locked for production
 
-## Domain restriction — OPEN for testing, LOCK before production
-
-So the test page runs on any machine, the bridge currently works on **any page**
-(any domain, `localhost`, `file://`). This is controlled by ONE flag in
+The bridge only responds to `https://*.giddh.com`, `https://*.erpdocs.com`, and
+`localhost`/`127.0.0.1` (for local dev). This is controlled by ONE flag in
 `extension/background.js`:
 
 ```js
-const ALLOW_ALL_ORIGINS = true; // TESTING ONLY — set false for production
+const ALLOW_ALL_ORIGINS = false; // set true ONLY for local development/testing
 ```
 
-**Before production, lock it down (2 steps):**
-1. Set `ALLOW_ALL_ORIGINS = false` in `background.js`.
-2. In `manifest.json`, change both `"matches": ["<all_urls>"]` back to the real
-   domains (e.g. `"https://*.giddh.com/*"`). The allowlist is already prepared
-   in `background.js` just below the flag.
+`manifest.json`'s `content_scripts` / `web_accessible_resources` `matches` list
+the same domains — keep both in sync when adding a new Giddh domain.
 
 ## Test on any machine
 
@@ -137,11 +183,11 @@ installer bundles it; the machine only needs its **DSC token vendor driver**):
    (For a `file://` test page, also open **Details → Allow access to file URLs**.)
 2. Build + install the OS installer:
    ```bash
-   VERSION=1.3.0 ./packaging/macos/build_macos.sh
-   open dist/GiddhDSCBridge-1.3.0.dmg      # run the .pkg (right-click → Open; it is unsigned)
+   VERSION=1.6.0 ./packaging/macos/build_macos.sh
+   open dist/GiddhDSCBridge-1.6.0.dmg      # run the .pkg (right-click → Open; it is unsigned)
    ```
-3. Open `dsc-bridge/test-page/index.html` (or any page while in testing mode),
-   plug in the token, read certs and sign.
+3. Open `dsc-bridge/test-page/index.html` (or a page on an allowed domain,
+   see "Domain restriction" above), plug in the token, read certs and sign.
 
 > The native host **self-heals** stale token locks on start, so swapping the DSC
 > token no longer requires manually deleting driver lock files.
@@ -161,7 +207,7 @@ cross-compile):
 builds mac + Windows + Linux on a version tag:
 
 ```bash
-git tag v1.3.0 && git push origin v1.3.0   # or run it manually from the Actions tab
+git tag v1.6.0 && git push origin v1.6.0   # or run it manually from the Actions tab
 ```
 
 ### Where each installer puts things
@@ -179,17 +225,26 @@ git tag v1.3.0 && git push origin v1.3.0   # or run it manually from the Actions
 ## Notes
 
 - The `.exe` **cannot** be built or tested on a Mac — use a Windows machine or CI.
-- Installers are **unsigned** → macOS Gatekeeper / Windows SmartScreen will warn.
-  For public distribution (production TODO): **macOS** — `codesign` the binary +
-  `productsign` the pkg with a Developer ID, then `notarytool` to notarize;
-  **Windows** — Authenticode-sign `giddh-dsc-host.exe` and the setup `.exe`.
+- **Windows** installer + binaries: code signing (SSL.com eSigner) is wired up
+  in CI but inactive until credentials are added — see `docs/WINDOWS_SIGNING.md`.
+  Until then, macOS Gatekeeper / Windows SmartScreen will warn on the unsigned
+  build. **macOS** notarization (`codesign` + `productsign` + `notarytool`) is
+  not yet wired up.
 - **Ship together:** the OS installer **and** the `dsc-bridge/extension/` folder.
   Build each installer on its own OS; the `.exe` cannot be built on a Mac.
 
 ## Production checklist
 
-- [ ] `ALLOW_ALL_ORIGINS = false` and `manifest.json` `matches` restored to real domains.
+- [ ] `ALLOW_ALL_ORIGINS = false` in `background.js` (default) and `manifest.json`
+      `matches` point at real domains (default: `giddh.com`, `erpdocs.com`).
 - [ ] `packaging/extension-id.txt` matches the loaded extension's ID.
 - [ ] Installer built + installed on each target OS; token driver present (64-bit).
 - [ ] `test-page/index.html` (or the real app) reads certs and signs on each target.
 - [ ] `giddh-extension-key.pem` backed up securely and NOT committed.
+- [ ] Windows signing secrets (`ES_USERNAME`, `ES_PASSWORD`, `ES_CREDENTIAL_ID`,
+      `ES_TOTP_SECRET`) added once ready — see `docs/WINDOWS_SIGNING.md`.
+
+## AI agents / new contributors
+
+Start with [`PROJECT.md`](PROJECT.md) — a single-file guide covering
+architecture, conventions, build commands, and where things live.

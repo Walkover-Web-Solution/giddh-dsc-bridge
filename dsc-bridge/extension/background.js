@@ -32,28 +32,21 @@ const NATIVE_HOST_NAME = "com.giddh.dsc.bridge";
 const NATIVE_OP_TIMEOUT_MS = 55000;
 
 // ═════════════════════════════════════════════════════════════════════════
-// ⚠️  DOMAIN RESTRICTION — CURRENTLY OPEN (TESTING MODE) ⚠️
-// ─────────────────────────────────────────────────────────────────────────
-// The bridge currently works on ANY page (any domain, localhost, file://) so
-// it can be tested on any machine without a web server.
-//
-// 🔒 BEFORE PRODUCTION DEPLOY — LOCK THIS DOWN (2 steps):
-//    1) Set  ALLOW_ALL_ORIGINS = false  (just below).
-//    2) In manifest.json, change BOTH "matches": ["<all_urls>"] back to your
-//       real domains, e.g. ["https://*.giddh.com/*", "https://*.erpdocs.com/*"].
-// The allowlist to use is already prepared in the constants below.
+// DOMAIN RESTRICTION — PRODUCTION MODE
 // ═════════════════════════════════════════════════════════════════════════
-const ALLOW_ALL_ORIGINS = true; // ⚠️ TESTING ONLY — set to false for production
+// Set this to true ONLY for local development/testing. When false, the bridge
+// only responds to origins matching the allowlist below and localhost.
+const ALLOW_ALL_ORIGINS = false;
 
 // Production allowlist (used only when ALLOW_ALL_ORIGINS is false).
 // sender.origin is set by Chrome from the real page origin and cannot be
 // spoofed by page JS. Keep in sync with "matches" in manifest.json.
 const ALLOWED_HOST_SUFFIXES = [".giddh.com", ".erpdocs.com"]; // + all subdomains
 const ALLOWED_HOSTS_EXACT = ["giddh.com", "erpdocs.com"];      // apex domains
-const ALLOW_LOCALHOST = true;                                   // allow http://localhost
+const ALLOW_LOCALHOST = true;                                   // allow http(s)://localhost
 
 function _isAllowedOrigin(origin) {
-  if (ALLOW_ALL_ORIGINS) return true;        // ⚠️ testing mode — everything allowed
+  if (ALLOW_ALL_ORIGINS) return true;        // development override
   if (!origin) return false;                 // file:// pages report a null origin
   let scheme, host;
   try {
