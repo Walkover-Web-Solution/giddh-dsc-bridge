@@ -1,7 +1,0 @@
-# Standalone DSC full-flow test server.
-# The signing engine (dsc_signing/) brings the crypto stack; these are what the
-# test server itself needs plus the engine's runtime deps pinned loosely.
-Flask>=3.0
-pyHanko>=0.21
-cryptography>=42.0
-reportlab>=4.0

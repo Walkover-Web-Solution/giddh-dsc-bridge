@@ -47,13 +47,21 @@
     </div>
 
     <div class="card">
-      <h2>2. Certificates on token</h2>
+      <h2>2. PKCS#11 modules</h2>
+      <p class="sub" style="margin:0 0 6px;">Read-only view of the modules the host will use.
+         Attach or pin a module in the <b>Giddh DSC Bridge</b> desktop app.</p>
+      <button id="btnModules">List modules</button>
+      <div id="moduleList" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>3. Certificates on token</h2>
       <button id="btnCerts">Read certificates</button>
       <div id="certList" style="margin-top:12px;"></div>
     </div>
 
     <div class="card">
-      <h2>3. Sign a test hash</h2>
+      <h2>4. Sign a test hash</h2>
       <p class="sub" style="margin:0 0 6px;">Signs the SHA-256 of the text below with the selected certificate.</p>
       <label>Text to hash &amp; sign</label>
       <input id="text" value="hello dsc bridge">
@@ -76,9 +84,24 @@
     function refresh() {
       const ok = !!window.GiddhBridge;
       $("dot").className = "dot " + (ok ? "ok" : "bad");
-      $("statusText").textContent = ok ? "Giddh DSC Bridge detected" : "Bridge NOT detected — install the extension + native host";
+      const ver = ok ? (window.GiddhBridge.version || "pre-1.3.0") : null;
+      $("statusText").textContent = ok
+        ? `Giddh DSC Bridge detected (page script ${ver})`
+        : "Bridge NOT detected — install the extension + native host";
       $("btnCerts").disabled = !ok;
       $("btnDiag").disabled = !ok;
+      $("btnModules").disabled = !ok;
+    }
+
+    // The browser keeps serving the previously injected bridge-inject.js until
+    // the extension is reloaded, so a newly added call is simply absent. Say so
+    // instead of letting the page die on "is not a function".
+    function requireApi(name) {
+      if (window.GiddhBridge && typeof window.GiddhBridge[name] === "function") return true;
+      out(`The extension loaded in this browser is out of date: it does not provide `
+        + `"${name}" (page script ${(window.GiddhBridge && window.GiddhBridge.version) || "pre-1.3.0"}).\n\n`
+        + `Open chrome://extensions, click Reload on "Giddh DSC Bridge", then reload this page.`);
+      return false;
     }
 
     async function toB64(buf) {
@@ -97,8 +120,59 @@
         el.onclick = () => { selected = +el.dataset.i; renderCerts(); $("btnSign").disabled = false; });
     }
 
+    function moduleStatus(m) {
+      const tokens = (m.tokens || []).filter(Boolean);
+      if (tokens.length) return "Token: " + tokens.join(", ");
+      if (m.arch_mismatch) return "Architecture mismatch";
+      if (!m.driver_exists) return "File missing";
+      if (!m.driver_loads) return "Load failed";
+      // Never inferred from a module's own error codes — a module that cannot
+      // drive the card reports "not present"/"not recognised" even when the card
+      // is inserted and completely free. PC/SC (r.readers) is the only truth.
+      return (m.slots || []).length ? "This module sees no usable token" : "Loaded, no reader";
+    }
+
+    function renderModules(r) {
+      const mods = (r && r.modules) || [];
+      const readers = (r && r.readers) || [];
+      const cardOk = readers.some(x => x.card_present);
+      const served = mods.some(m => (m.tokens || []).filter(Boolean).length);
+
+      const head = readers.length
+        ? readers.map(x => `${x.reader}: ${x.status}`).join(" · ")
+        : "No smartcard reader detected — plug in your DSC token.";
+      let banner = `<div class="cert"><b>Card (via PC/SC)</b><span>${head}</span></div>`;
+      if (cardOk && !served && mods.length) {
+        banner += `<div class="cert" style="border-color:#dc2626">
+          <b>No module can read this card</b>
+          <span>The card is inserted and <b>not locked</b> by any application, but none of
+          the modules below can drive it — the PKCS#11 module for this token is missing or
+          is the wrong one. Install your DSC vendor's library, then attach it in the Giddh
+          DSC Bridge app. If the token works in Adobe Acrobat, attach the same path
+          Acrobat uses.</span>
+        </div>`;
+      }
+
+      $("moduleList").innerHTML = banner + (mods.map(m => {
+        const name = m.driver_path.split("/").pop();
+        const mark = m.preferred ? "★ " : (m.attached ? "+ " : "");
+        return `<div class="cert">
+           <b>${mark}${name}</b>
+           <span>${m.manufacturer_id || "?"} · library ${m.library_version || "?"}
+                 · Cryptoki ${m.cryptoki_version || "?"} · ${moduleStatus(m)}</span>
+           <span style="opacity:.6">${m.driver_path}</span>
+         </div>`;
+      }).join("") || "<i>No PKCS#11 modules found.</i>");
+    }
+
     $("btnRecheck").onclick = refresh;
     $("btnDiag").onclick = async () => { out("Running diagnose…"); out(await window.GiddhBridge.diagnose()); };
+    $("btnModules").onclick = async () => {
+      if (!requireApi("listModules")) return;
+      out("Listing PKCS#11 modules…");
+      const r = await window.GiddhBridge.listModules();
+      renderModules(r); out(r);
+    };
     $("btnCerts").onclick = async () => {
       out("Reading certificates…");
       const r = await window.GiddhBridge.getCertificate();
