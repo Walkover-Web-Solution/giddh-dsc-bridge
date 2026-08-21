@@ -576,34 +576,19 @@ class StatusApp:
         # Approximate wrap height (lines * 18)
         wrap_chars = 420 // 6  # rough
         lines = max(1, len(APP_DESCRIPTION) // max(1, wrap_chars) + 1)
-        y += lines * 18 + 14
+        y += lines * 18 + 14 + 20
 
-        # ── Status card (grey rectangle with three lines) ──────────────────
-        card_h = 90
-        card_pad_x = 16
-        card_pad_y = 14
-        c.create_rectangle(pad, y, w - pad, y + card_h,
-                           fill=ACCENT_BG, outline=ACCENT_BG, tags="static")
-        line_y = y + card_pad_y
-        # Status line text/colour is kept in `self._status_state` so that a
-        # re-render (triggered by any <Configure> event, e.g. the automatic
-        # resize macOS performs while mapping the window at startup) redraws
-        # the *current* status instead of resetting it back to "…".
-        if not hasattr(self, "_status_state"):
-            self._status_state = {
-                "host": ("Native host: …", LIGHT_FG),
-                "browser": ("Browser registered: …", LIGHT_FG),
-                "token": ("DSC token: …", LIGHT_FG),
-            }
-        self._canvas_text_ids = {}
-        for key in ("host", "browser", "token"):
-            text, color = self._status_state[key]
-            tid = c.create_text(pad + card_pad_x, line_y, text=text,
-                                fill=color, font=("Helvetica", 13), anchor="nw",
-                                tags="static")
-            self._canvas_text_ids[key] = tid
-            line_y += 22
-        y += card_h + 16
+        # NOTE: an always-on "Native host / Browser registered / DSC token"
+        # status card used to render here. It relied on locating the native
+        # host executable on disk (_find_host_executable), which is only
+        # reliable right after a fresh install — a user simply reopening
+        # this app later (leftover .app from an older/partial install,
+        # host moved, etc.) would see a permanently red "not installed"
+        # error box even when everything actually works, with no easy way
+        # to tell a real problem from a stale one. Removed in favor of the
+        # on-demand "Check token" button below, which reports the live
+        # result the moment it's clicked instead of a static guess at
+        # startup.
 
         # ── Buttons (ttk.Button — these render fine on Aqua Tk 8.5) ────────
         # We want them at the same vertical position as `y`. Use a tk.Frame
@@ -715,16 +700,8 @@ class StatusApp:
             f"{APP_NAME}\nVersion {VERSION}\n\n{APP_DESCRIPTION}",
         )
 
-    def _set_status_line(self, key: str, text: str, color: str) -> None:
-        """Update one status-card line, both on screen and in the state
-        dict used to repaint after a canvas <Configure> re-render."""
-        if hasattr(self, "_status_state"):
-            self._status_state[key] = (text, color)
-        if hasattr(self, "_canvas_text_ids") and self._canvas_text_ids:
-            self.canvas.itemconfig(self._canvas_text_ids[key], text=text, fill=color)
-
     def _on_check_token(self) -> None:
-        self._set_status_line("token", "DSC token: checking…", SECONDARY_FG)
+        self.root.config(cursor="wait")
         self.canvas.update_idletasks()
 
         def run() -> None:
@@ -745,16 +722,16 @@ class StatusApp:
         threading.Thread(target=run, daemon=True).start()
 
     def _update_token_status(self, token_ok: bool, tokens: list[str], error: str | None) -> None:
+        self.root.config(cursor="")
         if error:
-            self._set_status_line("token", f"DSC token: error — {error}", ERROR_RED)
+            messagebox.showerror("Check token", f"Could not check the token:\n\n{error}")
         elif token_ok:
-            label = f" ({tokens[0]})" if tokens else ""
-            self._set_status_line("token", f"DSC token: detected{label}", SUCCESS_GREEN)
+            label = f"\n\nDetected: {tokens[0]}" if tokens else ""
+            messagebox.showinfo("Check token", f"DSC token detected.{label}")
         else:
-            self._set_status_line(
-                "token",
-                "DSC token: not detected. Plug in the token and click Check token.",
-                ERROR_RED,
+            messagebox.showwarning(
+                "Check token",
+                "No DSC token detected. Plug in the token and click Check token again.",
             )
 
     def _on_uninstall(self) -> None:
@@ -816,21 +793,11 @@ class StatusApp:
     # -------------------------------------------------------------------------
 
     def refresh(self) -> None:
-        host_ok = is_host_installed()
-        browser_ok = is_host_registered()
-
-        self._set_status_line(
-            "host",
-            f"Native host: {'installed' if host_ok else 'not installed'}",
-            SUCCESS_GREEN if host_ok else ERROR_RED,
-        )
-        self._set_status_line(
-            "browser",
-            (f"Browser registered: {'yes' if browser_ok else 'no'}"
-             if host_ok or not browser_ok else
-             "Browser registered: yes (but host executable missing)"),
-            (SUCCESS_GREEN if browser_ok else ERROR_RED) if host_ok or not browser_ok else ERROR_RED,
-        )
+        # The old always-visible host/browser status lines were removed
+        # (see _render_canvas) — "Check token" now reports live results
+        # via a popup instead. Refresh just needs to keep the module list
+        # (which reflects local config, not fragile install-path guessing)
+        # up to date.
         self.modules = discover_modules()
         self._populate_tree()
 

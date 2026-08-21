@@ -67,6 +67,15 @@ class CertInfo:
     # DER (base64) of the issuer chain (intermediates + root) read off the same
     # token — attached to a signing cert so the CMS can embed the full path.
     chain_b64: List[str] = field(default_factory=list)
+    # Which PKCS#11 driver this cert was actually read from (set only by
+    # IsolatedSigner.list_certificates(), which may aggregate several
+    # tokens). Exposed to callers as plain text — separate from the opaque
+    # driver tag baked into cert_id_hex — so a UI can label "which token is
+    # this really?" (e.g. by the certificate owner's name) instead of only
+    # a generic vendor/model name that can't tell two same-model tokens
+    # apart or reflect that a token's certificate was renewed for someone
+    # else.
+    driver_path: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +88,7 @@ class CertInfo:
             "notAfter": self.not_after,
             "isCa": self.is_ca,
             "chain": self.chain_b64,
+            "driverPath": self.driver_path,
         }
 
 
@@ -1794,6 +1804,7 @@ class IsolatedSigner:
                     not_after=d.get("notAfter"),
                     is_ca=bool(d.get("isCa")),
                     chain_b64=list(d.get("chain") or []),
+                    driver_path=path,
                 ))
 
         if certs:

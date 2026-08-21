@@ -173,13 +173,29 @@
     // default "read from every token and merge") for both reading
     // certificates and — since signing uses whichever certificate the user
     // then selects from that token's list — for signing too.
-    function populateTokenSelect(r) {
-      const mods = (r && r.modules) || [];
+    //
+    // Labels are built from the certificate actually on each token
+    // (subjectCn), not just the vendor/model name: two tokens of the same
+    // model (e.g. two "HYP2003" Feitian dongles) are indistinguishable by
+    // model name alone, and a token's certificate can be renewed for a
+    // different person while the physical dongle keeps the same model
+    // label — so only the certificate on it tells you whose token it
+    // really is right now.
+    function populateTokenSelect(modsResp, certResp) {
+      const mods = (modsResp && modsResp.modules) || [];
       const prevValue = $("tokenSelect").value;
       const withToken = mods.filter(m => (m.tokens || []).filter(Boolean).length);
+
+      const ownerByDriver = {};
+      for (const c of (certResp && certResp.certificates) || []) {
+        if (c.driverPath && !ownerByDriver[c.driverPath]) ownerByDriver[c.driverPath] = c.subjectCn;
+      }
+
       const options = ['<option value="">All connected tokens (aggregate)</option>']
         .concat(withToken.map(m => {
-          const label = `${(m.tokens || []).filter(Boolean).join(", ")} (${m.manufacturer_id || m.driver_path.split("/").pop()})`;
+          const tokenName = (m.tokens || []).filter(Boolean).join(", ") || m.driver_path.split("/").pop();
+          const owner = ownerByDriver[m.driver_path];
+          const label = owner ? `${owner} (${tokenName})` : `${tokenName} (${m.manufacturer_id || "unknown vendor"})`;
           return `<option value="${m.driver_path.replace(/"/g, "&quot;")}">${label}</option>`;
         }));
       $("tokenSelect").innerHTML = options.join("");
@@ -193,7 +209,7 @@
       if (!requireApi("listModules")) return;
       out("Listing PKCS#11 modules…");
       const r = await window.GiddhBridge.listModules();
-      renderModules(r); populateTokenSelect(r); out(r);
+      renderModules(r); autoPopulateTokens(r); out(r);
     };
     $("btnCerts").onclick = async () => {
       const driver = $("tokenSelect").value;
@@ -202,6 +218,9 @@
       if (!r || !r.success) { out(r); return; }
       certs = r.certificates || []; selected = certs.length ? 0 : null;
       renderCerts(); $("btnSign").disabled = selected === null; out(r);
+      // A read just told us exactly whose certificate lives on each token —
+      // refresh the picker's labels with that ground truth.
+      if (!driver) populateTokenSelect(await window.GiddhBridge.listModules(), r);
     };
     $("btnSign").onclick = async () => {
       if (selected === null) return;
@@ -215,9 +234,18 @@
 
     // Auto-populate the token picker as soon as the bridge is ready, so the
     // user doesn't have to click "List modules" first just to pick a token.
-    async function autoPopulateTokens() {
+    // Reads certificates (unrestricted) too, purely to label each option
+    // with its real owner's name instead of a generic vendor/model name.
+    async function autoPopulateTokens(modsResp) {
       if (!window.GiddhBridge || typeof window.GiddhBridge.listModules !== "function") return;
-      try { populateTokenSelect(await window.GiddhBridge.listModules()); } catch (_) { /* ignore */ }
+      try {
+        const mods = modsResp || await window.GiddhBridge.listModules();
+        let certResp = null;
+        if (typeof window.GiddhBridge.getCertificate === "function") {
+          try { certResp = await window.GiddhBridge.getCertificate(); } catch (_) { /* ignore */ }
+        }
+        populateTokenSelect(mods, certResp);
+      } catch (_) { /* ignore */ }
     }
 
     window.addEventListener("giddh-dsc-bridge-ready", () => { refresh(); autoPopulateTokens(); });
