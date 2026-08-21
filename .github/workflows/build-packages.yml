@@ -47,6 +47,9 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
+          # Pin to 3.11: PyInstaller (6.x) supports 3.9–3.13 officially and
+          # is known-broken on 3.14, which is the default python on the
+          # windows-latest runner as of late 2026.
           python-version: "3.11"
 
       - name: Resolve version

@@ -18,14 +18,31 @@ $DefaultVersion = if (Test-Path (Join-Path $Root "VERSION")) {
 } else { "1.6.0" }
 $Version = if ($env:VERSION) { $env:VERSION } else { $DefaultVersion }
 
-# Resolve a REAL Python 3. On Windows the bare `python` command is often the
-# Microsoft Store "App execution alias" stub, which prints an install message
-# and silently does nothing (PyInstaller then produces no output). The `py`
-# launcher points at the actual interpreter, so prefer it.
+# Resolve the Python interpreter that has PyInstaller. On the GitHub-hosted
+# Windows runner, `actions/setup-python` installs a `python` (and `python3`)
+# shim that points at the exact interpreter it managed — we MUST use it,
+# because the bare `py -3` launcher resolves to whichever Python is newest
+# on the runner (currently Python 3.14.7, which PyInstaller does NOT yet
+# support). On a normal dev box, `py -3` is more reliable than `python`
+# (which is sometimes the Microsoft Store "App execution alias" stub), so we
+# fall back to that after the setup-python shim.
 $PyExe = $null; $PyArgs = @()
-if (Get-Command py -ErrorAction SilentlyContinue) { $PyExe = "py"; $PyArgs = @("-3") }
-elseif (Get-Command python -ErrorAction SilentlyContinue) { $PyExe = "python" }
-else { throw "Python 3 not found. Install python.org 3.x, or ensure 'py'/'python' is on PATH." }
+foreach ($candidate in @("python", "python3", "py")) {
+    $found = Get-Command $candidate -ErrorAction SilentlyContinue
+    if ($found) {
+        # Sanity-check: import PyInstaller (a tiny startup-cost probe) so we
+        # skip a `python` shim that points at a vanilla interpreter without
+        # the build deps. The PyInstaller import is what actually matters.
+        $probe = & $found.Source -c "import PyInstaller; print(PyInstaller.__version__)" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $PyExe = $found.Source
+            break
+        }
+    }
+}
+if (-not $PyExe) {
+    throw "Python 3 with PyInstaller not found on PATH. Install PyInstaller in the interpreter that 'python', 'python3', or 'py' resolves to, then re-run."
+}
 
 Write-Host "==> Freezing native host with PyInstaller (using: $PyExe $PyArgs)"
 Push-Location $Root
