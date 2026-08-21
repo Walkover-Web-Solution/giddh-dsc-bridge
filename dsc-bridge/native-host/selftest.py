@@ -37,8 +37,7 @@ sys.path.insert(0, HERE)
 # Import the SAME modules the native host uses, so this test exercises the real
 # code path (driver ranking, cert parsing, signing) rather than a parallel copy.
 try:
-    from pkcs11_signer import Pkcs11Signer, Pkcs11Error, list_driver_candidates
-    from giddh_dsc_host import _select_driver
+    from pkcs11_signer import Pkcs11Signer, Pkcs11Error, list_driver_candidates, rank_driver_candidates
 except Exception as e:  # pragma: no cover - import guard
     print(f"FATAL: cannot import bridge modules from {HERE}: {e}")
     print("       Run this from the native-host/ directory and install deps:")
@@ -91,7 +90,11 @@ def main():
             info("install your token vendor's driver (WatchData/ProxKey, SafeNet")
             info("eToken, Feitian ePass2003, …) and re-run.")
             return 1
-        driver = _select_driver(cands)
+        ranked = rank_driver_candidates(cands)
+        if not ranked:
+            fail("no usable PKCS#11 driver on this system")
+            return 1
+        driver = ranked[0]
         ok(f"selected driver: {driver}")
         for c in cands:
             marker = " <-- selected" if c == driver else ""

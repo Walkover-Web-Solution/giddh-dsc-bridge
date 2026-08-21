@@ -298,17 +298,27 @@ def _win32_registry_candidates() -> List[str]:
     return found
 
 
+def _path_key(p: str) -> str:
+    r"""Dedup key for a driver path. On Windows the filesystem is
+    case-insensitive, so the same DLL discovered once as ``C:\Windows\...``
+    (static list) and again as ``C:\WINDOWS\...`` (glob via %WINDIR%) must
+    collapse to one entry — otherwise one physical token is listed once per
+    path casing. On case-sensitive platforms normcase is a no-op."""
+    return os.path.normcase(os.path.normpath(p))
+
+
 def list_driver_candidates() -> List[str]:
     """Return PKCS#11 driver paths that exist on this system (static + globbed)."""
     platform = sys.platform
-    static = [p for p in _DRIVER_CANDIDATES.get(platform, []) if os.path.exists(p)]
-    for p in _glob_driver_candidates():
-        if p not in static:
-            static.append(p)
-    for p in _win32_registry_candidates():
-        if p not in static:
-            static.append(p)
-    return static
+    out: List[str] = []
+    seen = set()
+    for p in ([p for p in _DRIVER_CANDIDATES.get(platform, []) if os.path.exists(p)]
+              + _glob_driver_candidates() + _win32_registry_candidates()):
+        key = _path_key(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
 
 
 # -- Provider ranking -------------------------------------------------------
@@ -489,14 +499,17 @@ def resolve_driver_paths():
         preferred, strict = legacy, True
 
     paths = list_driver_candidates()
+    seen = {_path_key(p) for p in paths}
     for p in attached_modules() + ([preferred] if preferred else []):
-        if p and p not in paths:
+        key = _path_key(p)
+        if p and key not in seen:
+            seen.add(key)
             paths.append(p)
 
     ordered = rank_driver_candidates(paths) or paths
     # An explicitly attached module outranks our heuristics — including one the
     # ranker would normally drop (e.g. the pkcs11-spy debug shim).
-    if preferred and preferred not in ordered:
+    if preferred and _path_key(preferred) not in {_path_key(p) for p in ordered}:
         ordered.insert(0, preferred)
     return ordered, (preferred or None), strict
 

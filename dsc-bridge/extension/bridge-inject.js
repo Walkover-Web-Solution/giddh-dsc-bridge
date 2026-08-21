@@ -46,7 +46,7 @@
     // Bump together with manifest.json. Lets a page tell whether the browser
     // is still running a cached copy of this script after an extension update
     // (a stale copy is missing whatever was added in the newer version).
-    version: "1.7.0",
+    version: "1.7.1",
 
     getCertificate: function (driver) {
       return _send("getCertificate", driver ? { driver: driver } : {});
