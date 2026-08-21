@@ -1489,6 +1489,40 @@ def worker_main(argv: Optional[List[str]] = None) -> int:
     return 0
 
 
+def _encode_cert_id(driver_path: str, raw_id_hex: str) -> str:
+    """Tag a raw PKCS#11 CKA_ID with which driver/token it came from.
+
+    With several DSC tokens plugged in at once (a common setup — see
+    list_certificates below), sign_hash needs to know which specific token a
+    chosen certificate lives on without re-probing every driver again: that
+    is slow, and risks grabbing a session on the wrong token if two of the
+    user's own tokens happen to share a CKA_ID. The browser/companion app
+    treats certId as an opaque string and echoes it back verbatim, so it is
+    free to carry this extra routing info.
+    """
+    token = base64.urlsafe_b64encode(driver_path.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"{token}.{raw_id_hex}"
+
+
+def _decode_cert_id(cert_id_hex: str):
+    """Reverse of _encode_cert_id. Returns (driver_path_or_None, raw_id_hex).
+
+    Falls back gracefully to (None, cert_id_hex) for certIds that predate
+    this encoding (plain hex, no driver tag) or that don't decode cleanly —
+    callers then probe all drivers as before.
+    """
+    if cert_id_hex and "." in cert_id_hex:
+        token, _, raw = cert_id_hex.partition(".")
+        try:
+            padded = token + "=" * (-len(token) % 4)
+            driver_path = base64.urlsafe_b64decode(padded).decode("utf-8")
+            if os.path.exists(driver_path):
+                return driver_path, raw
+        except Exception:
+            pass
+    return None, cert_id_hex
+
+
 class IsolatedSigner:
     """Drop-in replacement for :class:`Pkcs11Signer` that never loads a PKCS#11
     library in this process — each operation runs in its own worker process.
@@ -1582,7 +1616,8 @@ class IsolatedSigner:
                 order.insert(0, first)
         return order
 
-    def _run_on_token(self, payload: dict, timeout: float, budget: float) -> dict:
+    def _run_on_token(self, payload: dict, timeout: float, budget: float,
+                      only_driver: Optional[str] = None) -> dict:
         """Try an op against each candidate until one owns a present token.
 
         An exclusive token lock held by other middleware is usually transient
@@ -1590,14 +1625,20 @@ class IsolatedSigner:
         that finds only busy/absent tokens is retried a couple of times before
         giving up. Returns the successful worker reply; raises Pkcs11Error with
         the most specific diagnosis otherwise.
+
+        ``only_driver`` restricts the probe to exactly one driver — used by
+        sign_hash() once list_certificates() has already told us which
+        specific token a chosen certificate lives on, so signing doesn't
+        re-probe (and potentially grab a session on) every other plugged-in
+        token first.
         """
-        if not self.driver_paths:
+        if not self.driver_paths and not only_driver:
             raise Pkcs11Error(
                 "No PKCS#11 driver found. Install your DSC token's driver and restart.",
                 "NO_DRIVER",
             )
 
-        candidates = self._ordered_candidates()
+        candidates = [only_driver] if only_driver else self._ordered_candidates()
         _log(f"{payload['op']}: probing {len(candidates)} provider(s) in isolated "
              f"workers: {[os.path.basename(p) for p in candidates]}")
 
@@ -1702,30 +1743,68 @@ class IsolatedSigner:
     # -- public API --------------------------------------------------------
 
     def list_certificates(self) -> List[CertInfo]:
-        reply = self._run_on_token({"op": "list_certs"},
-                                   _PROBE_TIMEOUT, _LIST_BUDGET)
-        certs = []
-        for d in reply.get("certs", []):
-            certs.append(CertInfo(
-                cert_id_hex=d.get("certId", ""),
-                cert_b64=d.get("certB64", ""),
-                subject_cn=d.get("subjectCn"),
-                issuer_cn=d.get("issuerCn"),
-                serial_hex=d.get("serial"),
-                not_before=d.get("notBefore"),
-                not_after=d.get("notAfter"),
-                is_ca=bool(d.get("isCa")),
-                chain_b64=list(d.get("chain") or []),
-            ))
-        return certs
+        """Aggregate certificates from every plugged-in token, not just the
+        first driver that answers.
+
+        The old behaviour stopped probing as soon as one driver returned a
+        usable reply (see _run_on_token), so with several DSC tokens
+        attached at once — a common setup — only the first-ranked token's
+        certificate was ever offered, with no way to pick a different one.
+        Each cert's certId is tagged with the driver it came from
+        (_encode_cert_id) so sign_hash can route directly to the right token.
+        """
+        candidates = [self.preferred] if self.strict else self._ordered_candidates()
+        deadline = time.monotonic() + _LIST_BUDGET
+        certs: List[CertInfo] = []
+        last_ok_driver: Optional[str] = None
+
+        for path in candidates:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            reply = self._call_worker({"op": "list_certs", "driver": path},
+                                      min(_PROBE_TIMEOUT, remaining))
+            if not reply.get("ok") or not reply.get("certs"):
+                continue
+            last_ok_driver = path
+            for d in reply["certs"]:
+                certs.append(CertInfo(
+                    cert_id_hex=_encode_cert_id(path, d.get("certId", "")),
+                    cert_b64=d.get("certB64", ""),
+                    subject_cn=d.get("subjectCn"),
+                    issuer_cn=d.get("issuerCn"),
+                    serial_hex=d.get("serial"),
+                    not_before=d.get("notBefore"),
+                    not_after=d.get("notAfter"),
+                    is_ca=bool(d.get("isCa")),
+                    chain_b64=list(d.get("chain") or []),
+                ))
+
+        if certs:
+            self._active_driver = last_ok_driver
+            _save_last_driver(last_ok_driver)
+            return certs
+
+        # Nothing on any driver — fall back to the single-driver probe purely
+        # for its rich, PC/SC-aware error diagnosis (locked vs missing vs
+        # wrong module) and busy-retry behaviour, which callers rely on for
+        # the message shown to the user.
+        self._run_on_token({"op": "list_certs"}, _PROBE_TIMEOUT, _LIST_BUDGET)
+        return []
 
     def sign_hash(self, hash_b64: str, algorithm: str, cert_id_hex: str, pin: str) -> str:
+        # certId may carry a driver tag added by list_certificates() so
+        # signing goes straight to the token that actually has this
+        # certificate, instead of re-probing (and possibly grabbing a
+        # session on) every other plugged-in token first. Untagged/legacy
+        # certIds fall back to probing all drivers as before.
+        driver_path, raw_id = _decode_cert_id(cert_id_hex)
         # The PIN travels over the worker's stdin pipe only — never argv, so it
         # cannot leak into process listings.
         reply = self._run_on_token({
             "op": "sign", "hash": hash_b64, "algorithm": algorithm,
-            "certId": cert_id_hex, "pin": pin,
-        }, _SIGN_TIMEOUT, _SIGN_BUDGET)
+            "certId": raw_id, "pin": pin,
+        }, _SIGN_TIMEOUT, _SIGN_BUDGET, only_driver=driver_path)
         return reply.get("signature", "")
 
     def _module_rows(self, paths: Optional[List[str]] = None) -> List[dict]:
