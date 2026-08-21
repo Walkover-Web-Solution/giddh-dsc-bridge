@@ -103,6 +103,18 @@ jobs:
             echo "SSL.com eSigner credentials not configured — building UNSIGNED (add ES_* secrets to enable)."
           fi
 
+      # SSLcom/esigner-codesign@v1.3.2's output_path param only creates the
+      # leaf directory; the parent must exist or the action fails with
+      # ENOENT. Create all three ahead of time, idempotently.
+      - name: Create signing output directories
+        if: matrix.os == 'windows-latest' && steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "artifacts/signed-host"     | Out-Null
+          New-Item -ItemType Directory -Force -Path "artifacts/signed-status"   | Out-Null
+          New-Item -ItemType Directory -Force -Path "artifacts/signed-installer" | Out-Null
+          Write-Host "✅ Signing output directories ready."
+
       # Sign the two frozen executables BEFORE they are embedded in the
       # installer (so the installer ships already-signed binaries), mirroring
       # the app-exe-then-installer signing order used for Electron builds.
