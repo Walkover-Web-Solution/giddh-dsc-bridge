@@ -257,24 +257,46 @@ def _apply_palette(root: tk.Tk) -> None:
 # -----------------------------------------------------------------------------
 
 HOST_NAME = "com.giddh.dsc.bridge"
-HOST_EXE = "giddh_dsc_host"
+HOST_EXE = "giddh-dsc-host"
 if is_windows():
     HOST_EXE += ".exe"
 
 
 def _find_host_executable() -> Path | None:
-    """Locate the native host binary next to this app."""
+    """Locate the native host binary next to this app.
+
+    The host and the status app are packaged as separate components that
+    don't always share an install root:
+      - macOS: host -> /usr/local/giddh-dsc-bridge/giddh-dsc-host,
+               status app -> /Applications/Giddh DSC Bridge.app (unrelated
+               location, so the host path must be hardcoded).
+      - Linux (.deb): both live under /opt/giddh-dsc-bridge, with the
+               status app one level down in a "status" subfolder, so
+               root.parent finds the host.
+      - Windows (Inno Setup): both live under {app}, with the status app
+               one level down in a "status" subfolder — same as Linux —
+               but the default install dir is {localappdata}, not
+               Program Files, so that must be checked too.
+    """
     root = get_app_root()
     candidates = [
         root / HOST_EXE,
         root / "native-host" / HOST_EXE,
+        root.parent / HOST_EXE,
         Path(f"/usr/local/bin/{HOST_EXE}"),
         Path.home() / ".giddh-dsc-bridge" / HOST_EXE,
     ]
+    if is_mac():
+        candidates.append(Path("/usr/local/giddh-dsc-bridge") / HOST_EXE)
+    elif not is_windows():
+        candidates.append(Path("/opt/giddh-dsc-bridge") / HOST_EXE)
     if is_windows():
         candidates.insert(0, root / f"{HOST_EXE}")
         program_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
         candidates.append(Path(program_files) / "Giddh DSC Bridge" / HOST_EXE)
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            candidates.append(Path(local_appdata) / "Giddh DSC Bridge" / HOST_EXE)
     for c in candidates:
         if c.exists():
             return c

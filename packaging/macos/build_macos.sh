@@ -43,7 +43,11 @@ if [ ! -f "$HOST_BIN" ]; then
 fi
 # Find the actual Python shared library PyInstaller bundled and confirm it
 # is on disk. _internal/Python is usually a symlink into a framework.
-PY_SHLIB=$(find "$HOST_OUT/_internal" -maxdepth 6 -type l -name 'Python' -o -name 'Python3' 2>/dev/null | head -1)
+# NOTE: -type l must be grouped with \( -o \) — without it, `find` parses
+# "-type l -name Python -o -name Python3" as "(-type l -name Python) OR
+# (-name Python3)", so the second alternative matches ANY file/dir named
+# Python3 (not just the symlink), silently masking a missing-symlink case.
+PY_SHLIB=$(find "$HOST_OUT/_internal" -maxdepth 6 -type l \( -name 'Python' -o -name 'Python3' \) 2>/dev/null | head -1)
 if [ -z "$PY_SHLIB" ] || [ ! -e "$PY_SHLIB" ]; then
   echo "ERROR: PyInstaller did not write the Python shared library (looked for"
   echo "       _internal/Python{,3} symlinks in $HOST_OUT/_internal)"
@@ -57,6 +61,26 @@ fi
 cp -R "$HOST_OUT/." "$PKGROOT$INSTALL_DIR/"
 chmod +x "$PKGROOT$INSTALL_DIR/giddh-dsc-host"
 sync
+
+# The symlink-exists check above is not sufficient — it has passed on a CI
+# runner before while the SHIPPED package still crashed for users with
+# "Failed to load Python shared library ... no such file" (root cause never
+# fully pinned down: something between PyInstaller COLLECT and the staged
+# copy leaves the framework's versioned directory missing even though the
+# symlink itself resolved at check time). The only check that actually
+# proves the binary works is running it. `--diagnose` runs the real
+# request handler and exits, so this doubles as an end-to-end smoke test of
+# the exact bytes that get shipped in the .pkg.
+echo "==> Smoke-testing staged host binary"
+SMOKE_LOG="$BUILD/host_smoketest.log"
+if ! "$PKGROOT$INSTALL_DIR/giddh-dsc-host" --diagnose >"$SMOKE_LOG" 2>&1; then
+  echo "ERROR: staged host binary at $PKGROOT$INSTALL_DIR/giddh-dsc-host failed to run."
+  echo "       This is the exact binary that would ship in the .dmg — the build"
+  echo "       must not continue. Output:"
+  cat "$SMOKE_LOG" || true
+  exit 1
+fi
+echo "    OK: $(cat "$SMOKE_LOG" | head -c 200)"
 
 # Bake the version into the app so the GUI can display it, then build the
 # visible status/companion app (.app) and stage it under /Applications.
@@ -76,7 +100,7 @@ if [ ! -f "$APP_BIN" ]; then
   echo "ERROR: PyInstaller did not produce $APP_BIN"
   exit 1
 fi
-APP_PY_SHLIB=$(find "$APP_OUT/Contents/Frameworks" -maxdepth 8 -type l -name 'Python' -o -name 'Python3' 2>/dev/null | head -1)
+APP_PY_SHLIB=$(find "$APP_OUT/Contents/Frameworks" -maxdepth 8 -type l \( -name 'Python' -o -name 'Python3' \) 2>/dev/null | head -1)
 if [ -z "$APP_PY_SHLIB" ] || [ ! -e "$APP_PY_SHLIB" ]; then
   echo "ERROR: PyInstaller did not write the Python shared library inside the .app"
   echo "       Contents/Frameworks:"
