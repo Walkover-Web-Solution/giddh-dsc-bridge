@@ -48,8 +48,8 @@
     // (a stale copy is missing whatever was added in the newer version).
     version: "1.7.0",
 
-    getCertificate: function () {
-      return _send("getCertificate");
+    getCertificate: function (driver) {
+      return _send("getCertificate", driver ? { driver: driver } : {});
     },
 
     diagnose: function () {

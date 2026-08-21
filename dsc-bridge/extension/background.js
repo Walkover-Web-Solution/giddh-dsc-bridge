@@ -171,6 +171,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.algorithm !== undefined) payload.algorithm = msg.algorithm;
   if (msg.certId !== undefined) payload.certId = msg.certId;
   if (msg.pin !== undefined) payload.pin = msg.pin;
+  // Optional PKCS#11 driver path — lets the page restrict getCertificate to
+  // one specific token (picked from listModules) instead of aggregating
+  // across every plugged-in token. Read-only pass-through: the host only
+  // ever accepts a path it itself already reported via listModules.
+  if (msg.driver !== undefined) payload.driver = msg.driver;
 
   // Queue behind any in-flight native call so only one host process runs at a
   // time (avoids the driver's cross-process mutex contention).

@@ -38,6 +38,7 @@
     if (data.algorithm !== undefined) bgMsg.algorithm = data.algorithm;
     if (data.certId !== undefined) bgMsg.certId = data.certId;
     if (data.pin !== undefined) bgMsg.pin = data.pin;
+    if (data.driver !== undefined) bgMsg.driver = data.driver;
 
     function postError(message, code) {
       window.postMessage({ __giddhDscResp: true, id: id, error: message, code: code || null }, "*");

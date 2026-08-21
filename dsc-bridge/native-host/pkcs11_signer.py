@@ -1742,7 +1742,7 @@ class IsolatedSigner:
 
     # -- public API --------------------------------------------------------
 
-    def list_certificates(self) -> List[CertInfo]:
+    def list_certificates(self, only_driver: Optional[str] = None) -> List[CertInfo]:
         """Aggregate certificates from every plugged-in token, not just the
         first driver that answers.
 
@@ -1752,8 +1752,24 @@ class IsolatedSigner:
         certificate was ever offered, with no way to pick a different one.
         Each cert's certId is tagged with the driver it came from
         (_encode_cert_id) so sign_hash can route directly to the right token.
+
+        ``only_driver`` lets a caller (the "Token" picker in the test page /
+        Giddh's UI) restrict the read to exactly one already-known driver
+        path instead of aggregating across all of them — useful once the
+        user has told us which physical token they want, so we don't touch
+        the other two tokens (and their locks) at all. It is validated
+        against self.driver_paths (paths the host itself already detected)
+        so a web page can never make the host dlopen an arbitrary library —
+        the same code-execution concern that keeps listModules read-only.
         """
-        candidates = [self.preferred] if self.strict else self._ordered_candidates()
+        if only_driver and only_driver not in self.driver_paths:
+            only_driver = None
+        if only_driver:
+            candidates = [only_driver]
+        elif self.strict:
+            candidates = [self.preferred]
+        else:
+            candidates = self._ordered_candidates()
         deadline = time.monotonic() + _LIST_BUDGET
         certs: List[CertInfo] = []
         last_ok_driver: Optional[str] = None
@@ -1785,11 +1801,12 @@ class IsolatedSigner:
             _save_last_driver(last_ok_driver)
             return certs
 
-        # Nothing on any driver — fall back to the single-driver probe purely
-        # for its rich, PC/SC-aware error diagnosis (locked vs missing vs
-        # wrong module) and busy-retry behaviour, which callers rely on for
-        # the message shown to the user.
-        self._run_on_token({"op": "list_certs"}, _PROBE_TIMEOUT, _LIST_BUDGET)
+        # Nothing on the selected driver(s) — fall back to the single-driver
+        # probe purely for its rich, PC/SC-aware error diagnosis (locked vs
+        # missing vs wrong module) and busy-retry behaviour, which callers
+        # rely on for the message shown to the user.
+        self._run_on_token({"op": "list_certs"}, _PROBE_TIMEOUT, _LIST_BUDGET,
+                           only_driver=only_driver)
         return []
 
     def sign_hash(self, hash_b64: str, algorithm: str, cert_id_hex: str, pin: str) -> str:

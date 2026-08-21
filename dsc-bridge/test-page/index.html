@@ -21,7 +21,7 @@
              border-radius:8px; padding:9px 15px; font-size:13px; font-weight:600; cursor:pointer; }
     button.ghost { background:#eef2f6; color:var(--slate); }
     button:disabled { opacity:.5; cursor:not-allowed; }
-    input { width:100%; padding:9px 11px; border:2px solid var(--bd); border-radius:8px; font-size:14px; }
+    input, select { width:100%; padding:9px 11px; border:2px solid var(--bd); border-radius:8px; font-size:14px; background:#fff; }
     label { font-size:12px; font-weight:600; color:var(--slate); display:block; margin:10px 0 5px; }
     pre { background:#0f172a; color:#e2e8f0; border-radius:8px; padding:14px; font-size:12px;
           overflow:auto; max-height:340px; white-space:pre-wrap; word-break:break-word; }
@@ -56,7 +56,11 @@
 
     <div class="card">
       <h2>3. Certificates on token</h2>
-      <button id="btnCerts">Read certificates</button>
+      <label>Token</label>
+      <select id="tokenSelect">
+        <option value="">All connected tokens (aggregate)</option>
+      </select>
+      <div class="row" style="margin-top:12px;"><button id="btnCerts">Read certificates</button></div>
       <div id="certList" style="margin-top:12px;"></div>
     </div>
 
@@ -165,17 +169,36 @@
       }).join("") || "<i>No PKCS#11 modules found.</i>");
     }
 
+    // Lets the user pick exactly one plugged-in token (instead of the
+    // default "read from every token and merge") for both reading
+    // certificates and — since signing uses whichever certificate the user
+    // then selects from that token's list — for signing too.
+    function populateTokenSelect(r) {
+      const mods = (r && r.modules) || [];
+      const prevValue = $("tokenSelect").value;
+      const withToken = mods.filter(m => (m.tokens || []).filter(Boolean).length);
+      const options = ['<option value="">All connected tokens (aggregate)</option>']
+        .concat(withToken.map(m => {
+          const label = `${(m.tokens || []).filter(Boolean).join(", ")} (${m.manufacturer_id || m.driver_path.split("/").pop()})`;
+          return `<option value="${m.driver_path.replace(/"/g, "&quot;")}">${label}</option>`;
+        }));
+      $("tokenSelect").innerHTML = options.join("");
+      // Keep the previous choice selected if that token is still present.
+      if (withToken.some(m => m.driver_path === prevValue)) $("tokenSelect").value = prevValue;
+    }
+
     $("btnRecheck").onclick = refresh;
     $("btnDiag").onclick = async () => { out("Running diagnose…"); out(await window.GiddhBridge.diagnose()); };
     $("btnModules").onclick = async () => {
       if (!requireApi("listModules")) return;
       out("Listing PKCS#11 modules…");
       const r = await window.GiddhBridge.listModules();
-      renderModules(r); out(r);
+      renderModules(r); populateTokenSelect(r); out(r);
     };
     $("btnCerts").onclick = async () => {
-      out("Reading certificates…");
-      const r = await window.GiddhBridge.getCertificate();
+      const driver = $("tokenSelect").value;
+      out(driver ? "Reading certificates from selected token…" : "Reading certificates from all connected tokens…");
+      const r = await window.GiddhBridge.getCertificate(driver);
       if (!r || !r.success) { out(r); return; }
       certs = r.certificates || []; selected = certs.length ? 0 : null;
       renderCerts(); $("btnSign").disabled = selected === null; out(r);
@@ -190,9 +213,16 @@
       out(r);
     };
 
-    window.addEventListener("giddh-dsc-bridge-ready", refresh);
+    // Auto-populate the token picker as soon as the bridge is ready, so the
+    // user doesn't have to click "List modules" first just to pick a token.
+    async function autoPopulateTokens() {
+      if (!window.GiddhBridge || typeof window.GiddhBridge.listModules !== "function") return;
+      try { populateTokenSelect(await window.GiddhBridge.listModules()); } catch (_) { /* ignore */ }
+    }
+
+    window.addEventListener("giddh-dsc-bridge-ready", () => { refresh(); autoPopulateTokens(); });
     refresh();
-    setTimeout(refresh, 800); // content script may inject slightly after load
+    setTimeout(() => { refresh(); autoPopulateTokens(); }, 800); // content script may inject slightly after load
   </script>
 </body>
 </html>

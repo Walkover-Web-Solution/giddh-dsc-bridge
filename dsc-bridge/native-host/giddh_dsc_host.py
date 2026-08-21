@@ -170,9 +170,9 @@ def _handle_list_modules(signer) -> dict:
         return {"success": False, "error": str(e), "code": "INTERNAL"}
 
 
-def _handle_get_certificate(signer: IsolatedSigner) -> dict:
+def _handle_get_certificate(signer: IsolatedSigner, driver: str = "") -> dict:
     try:
-        certs = signer.list_certificates()
+        certs = signer.list_certificates(only_driver=driver or None)
         if not certs:
             return {"success": False, "error": "No certificates found on the token. Ensure your DSC token is plugged in.", "code": "NO_CERTS"}
         return {
@@ -241,7 +241,7 @@ def main():
                 if not signer:
                     _send_message({"success": False, "error": "No PKCS#11 module available. Install your DSC token driver, or attach the module in the Giddh DSC Bridge app.", "code": "NO_DRIVER"})
                 else:
-                    _send_message(_handle_get_certificate(signer))
+                    _send_message(_handle_get_certificate(signer, msg.get("driver", "")))
             elif action == "signHash":
                 if not signer:
                     _send_message({"success": False, "error": "No PKCS#11 module available. Install your DSC token driver, or attach the module in the Giddh DSC Bridge app.", "code": "NO_DRIVER"})
