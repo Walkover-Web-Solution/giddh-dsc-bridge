@@ -278,14 +278,22 @@ jobs:
       - name: Find signed Windows installer
         id: win
         run: |
-          WIN_DIR=$(find artifacts -maxdepth 3 -name "windows-latest" -type d | head -1)
-          if [ -z "$WIN_DIR" ]; then
-            echo "::error::Windows artifact not found"
+          # `actions/download-artifact@v4` extracts into a directory named
+          # after the artifact (the matrix uploader names it
+          # `giddh-dsc-bridge-${matrix.os}`), so the dir is
+          # `giddh-dsc-bridge-windows-latest`, not `windows-latest`.
+          WIN_DIR="artifacts/giddh-dsc-bridge-windows-latest"
+          if [ ! -d "$WIN_DIR" ]; then
+            echo "::error::Windows artifact directory not found at $WIN_DIR"
+            echo "::error::Contents of artifacts/:"
+            ls -la artifacts/ 2>&1 || true
             exit 1
           fi
-          INSTALLER=$(find "$WIN_DIR" -maxdepth 2 -name "GiddhDSCBridge-Setup-*.exe" | head -1)
+          INSTALLER=$(find "$WIN_DIR" -maxdepth 2 -name "GiddhDSCBridge-Setup-*.exe" -not -name "*.blockmap" | head -1)
           if [ -z "$INSTALLER" ]; then
-            echo "::error::Signed Windows installer not found"
+            echo "::error::Signed Windows installer not found in $WIN_DIR"
+            echo "::error::Contents of $WIN_DIR:"
+            ls -la "$WIN_DIR/" 2>&1 || true
             exit 1
           fi
           echo "installer=$INSTALLER"     >> "$GITHUB_OUTPUT"
@@ -323,12 +331,18 @@ jobs:
       - name: Find macOS DMG
         id: macos
         run: |
-          MAC_DIR=$(find artifacts -maxdepth 3 -name "macos-latest" -type d | head -1)
-          if [ -z "$MAC_DIR" ]; then
-            echo "::error::macOS artifact not found"
+          MAC_DIR="artifacts/giddh-dsc-bridge-macos-latest"
+          if [ ! -d "$MAC_DIR" ]; then
+            echo "::error::macOS artifact directory not found at $MAC_DIR"
+            ls -la artifacts/ 2>&1 || true
             exit 1
           fi
           DMG=$(find "$MAC_DIR" -maxdepth 2 -name "GiddhDSCBridge-*.dmg" | head -1)
+          if [ -z "$DMG" ]; then
+            echo "::error::macOS DMG not found in $MAC_DIR"
+            ls -la "$MAC_DIR/" 2>&1 || true
+            exit 1
+          fi
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
           echo "version=$(basename "$DMG" .dmg | sed 's/GiddhDSCBridge-//')" >> "$GITHUB_OUTPUT"
 
@@ -359,12 +373,18 @@ jobs:
       - name: Find Linux .deb
         id: linux
         run: |
-          LINUX_DIR=$(find artifacts -maxdepth 3 -name "ubuntu-latest" -type d | head -1)
-          if [ -z "$LINUX_DIR" ]; then
-            echo "::error::Linux artifact not found"
+          LINUX_DIR="artifacts/giddh-dsc-bridge-ubuntu-latest"
+          if [ ! -d "$LINUX_DIR" ]; then
+            echo "::error::Linux artifact directory not found at $LINUX_DIR"
+            ls -la artifacts/ 2>&1 || true
             exit 1
           fi
           DEB=$(find "$LINUX_DIR" -maxdepth 2 -name "giddh-dsc-bridge_*.deb" | head -1)
+          if [ -z "$DEB" ]; then
+            echo "::error::Linux .deb not found in $LINUX_DIR"
+            ls -la "$LINUX_DIR/" 2>&1 || true
+            exit 1
+          fi
           echo "deb=$DEB" >> "$GITHUB_OUTPUT"
           echo "version=$(echo "$DEB" | sed -n 's/.*giddh-dsc-bridge_\([^_]*\)_.*\.deb/\1/p')" >> "$GITHUB_OUTPUT"
 
