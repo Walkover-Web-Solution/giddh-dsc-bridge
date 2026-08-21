@@ -16,6 +16,9 @@ name: Build DSC Bridge installers
 
 on:
   push:
+    branches:
+      - main
+      - "test-*"
     tags:
       - "v*"
   workflow_dispatch:
