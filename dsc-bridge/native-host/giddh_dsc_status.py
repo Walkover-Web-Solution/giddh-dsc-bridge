@@ -69,7 +69,7 @@ def _resolve_version() -> str:
             return version_file.read_text(encoding="utf-8").strip()
         except Exception:
             pass
-    return "1.6.0"
+    return "1.7.0"
 
 
 VERSION = _resolve_version()
@@ -256,7 +256,7 @@ def _apply_palette(root: tk.Tk) -> None:
 # Native-host status helpers
 # -----------------------------------------------------------------------------
 
-HOST_NAME = "com.giddh.dsc_bridge"
+HOST_NAME = "com.giddh.dsc.bridge"
 HOST_EXE = "giddh_dsc_host"
 if is_windows():
     HOST_EXE += ".exe"
@@ -298,15 +298,18 @@ def is_host_registered() -> bool:
             return False
     elif is_mac():
         paths = [
-            Path.home() / "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.giddh.dsc_bridge.json",
-            Path.home() / "Library/Application Support/Chromium/NativeMessagingHosts/com.giddh.dsc_bridge.json",
-            Path.home() / "Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.giddh.dsc_bridge.json",
+            Path.home() / "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.giddh.dsc.bridge.json",
+            Path.home() / "Library/Application Support/Chromium/NativeMessagingHosts/com.giddh.dsc.bridge.json",
+            Path.home() / "Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.giddh.dsc.bridge.json",
+            Path("/Library/Google/Chrome/NativeMessagingHosts/com.giddh.dsc.bridge.json"),
+            Path("/Library/Application Support/Chromium/NativeMessagingHosts/com.giddh.dsc.bridge.json"),
+            Path("/Library/Microsoft/Edge/NativeMessagingHosts/com.giddh.dsc.bridge.json"),
         ]
         return any(p.exists() for p in paths)
     else:
         paths = [
-            Path.home() / ".config/google-chrome/NativeMessagingHosts/com.giddh.dsc_bridge.json",
-            Path.home() / ".config/chromium/NativeMessagingHosts/com.giddh.dsc_bridge.json",
+            Path.home() / ".config/google-chrome/NativeMessagingHosts/com.giddh.dsc.bridge.json",
+            Path.home() / ".config/chromium/NativeMessagingHosts/com.giddh.dsc.bridge.json",
         ]
         return any(p.exists() for p in paths)
 
@@ -488,9 +491,19 @@ class StatusApp:
         self._render_canvas()
 
     def _render_canvas(self) -> None:
-        """Draw the entire UI onto a single canvas."""
+        """Draw the entire UI onto a single canvas.
+
+        Only items tagged "static" are cleared and redrawn here. The
+        embedded widgets (button row, advanced checkbutton, advanced
+        frame) are created once and only repositioned afterwards — a
+        plain `delete("all")` would remove the `create_window` items that
+        host them, and since they are only ever (re)created behind
+        `hasattr` guards, they would disappear permanently after the very
+        first <Configure> event (which macOS fires automatically while the
+        window is being laid out at startup).
+        """
         c = self.canvas
-        c.delete("all")
+        c.delete("static")
         w = self._canvas_width
         # Layout constants
         pad = 24
@@ -519,25 +532,25 @@ class StatusApp:
                     img = img.resize((icon_size, icon_size), Image.Resampling.LANCZOS)
                     self._logo_photo = ImageTk.PhotoImage(img)
                 c.create_image(icon_x + icon_size // 2, y + icon_size // 2,
-                               image=self._logo_photo)
+                               image=self._logo_photo, tags="static")
             except Exception:
                 logger.exception("Failed to load hero icon at %s", icon_path)
         y += icon_size + 12
 
         # Title (large bold)
         c.create_text(w // 2, y, text=APP_NAME, fill=LIGHT_FG,
-                      font=("Helvetica", 22, "bold"), anchor="n")
+                      font=("Helvetica", 22, "bold"), anchor="n", tags="static")
         y += 32
 
         # Version (smaller gray)
         c.create_text(w // 2, y, text=f"Version {VERSION}", fill=SECONDARY_FG,
-                      font=("Helvetica", 11), anchor="n")
+                      font=("Helvetica", 11), anchor="n", tags="static")
         y += 20
 
         # Description (wrap)
         c.create_text(w // 2, y, text=APP_DESCRIPTION, fill=SECONDARY_FG,
                       font=("Helvetica", 12), width=420, anchor="n",
-                      justify="center")
+                      justify="center", tags="static")
         # Approximate wrap height (lines * 18)
         wrap_chars = 420 // 6  # rough
         lines = max(1, len(APP_DESCRIPTION) // max(1, wrap_chars) + 1)
@@ -548,17 +561,24 @@ class StatusApp:
         card_pad_x = 16
         card_pad_y = 14
         c.create_rectangle(pad, y, w - pad, y + card_h,
-                           fill=ACCENT_BG, outline=ACCENT_BG)
+                           fill=ACCENT_BG, outline=ACCENT_BG, tags="static")
         line_y = y + card_pad_y
+        # Status line text/colour is kept in `self._status_state` so that a
+        # re-render (triggered by any <Configure> event, e.g. the automatic
+        # resize macOS performs while mapping the window at startup) redraws
+        # the *current* status instead of resetting it back to "…".
+        if not hasattr(self, "_status_state"):
+            self._status_state = {
+                "host": ("Native host: …", LIGHT_FG),
+                "browser": ("Browser registered: …", LIGHT_FG),
+                "token": ("DSC token: …", LIGHT_FG),
+            }
         self._canvas_text_ids = {}
-        # We'll draw these texts each refresh; remember positions
-        for key, text in (
-            ("host", "Native host: …"),
-            ("browser", "Browser registered: …"),
-            ("token", "DSC token: …"),
-        ):
+        for key in ("host", "browser", "token"):
+            text, color = self._status_state[key]
             tid = c.create_text(pad + card_pad_x, line_y, text=text,
-                                fill=LIGHT_FG, font=("Helvetica", 13), anchor="nw")
+                                fill=color, font=("Helvetica", 13), anchor="nw",
+                                tags="static")
             self._canvas_text_ids[key] = tid
             line_y += 22
         y += card_h + 16
@@ -584,7 +604,7 @@ class StatusApp:
         # ── Advanced section toggle ────────────────────────────────────────
         if not hasattr(self, "_advanced_visible_lbl"):
             self._advanced_visible = tk.BooleanVar(value=False)
-        c.create_line(pad, y, w - pad, y, fill=ACCENT_BG, width=1)
+        c.create_line(pad, y, w - pad, y, fill=ACCENT_BG, width=1, tags="static")
         y += 10
 
         if not hasattr(self, "_advanced_check"):
@@ -615,7 +635,7 @@ class StatusApp:
         c.create_text(w // 2, footer_y,
                       text="The browser extension uses this bridge automatically. You can close this window.",
                       fill=SECONDARY_FG, font=("Helvetica", 11),
-                      width=520, justify="center")
+                      width=520, justify="center", tags="static")
 
     def _toggle_advanced_canvas(self) -> None:
         if self._advanced_visible.get():
@@ -673,42 +693,46 @@ class StatusApp:
             f"{APP_NAME}\nVersion {VERSION}\n\n{APP_DESCRIPTION}",
         )
 
-    def _on_check_token(self) -> None:
+    def _set_status_line(self, key: str, text: str, color: str) -> None:
+        """Update one status-card line, both on screen and in the state
+        dict used to repaint after a canvas <Configure> re-render."""
+        if hasattr(self, "_status_state"):
+            self._status_state[key] = (text, color)
         if hasattr(self, "_canvas_text_ids") and self._canvas_text_ids:
-            self.canvas.itemconfig(
-                self._canvas_text_ids["token"],
-                text="DSC token: checking…", fill=SECONDARY_FG,
-            )
-            self.canvas.update_idletasks()
+            self.canvas.itemconfig(self._canvas_text_ids[key], text=text, fill=color)
+
+    def _on_check_token(self) -> None:
+        self._set_status_line("token", "DSC token: checking…", SECONDARY_FG)
+        self.canvas.update_idletasks()
 
         def run() -> None:
             result = run_host_diagnose()
-            token_ok = result.get("token_present", False)
-            certs = result.get("certificates", [])
+            # A successful CLI run returns the host's own diagnose() reply —
+            # {"success": true, "diagnostics": {...}} — which has no
+            # top-level "token_present"/"certificates" keys; those never
+            # existed, so reading them always reported "not detected" even
+            # with a token plugged in. Token presence has to be derived from
+            # diagnostics.tokens / pcsc_readers instead.
             error = result.get("error")
-            self.root.after(0, lambda: self._update_token_status(token_ok, len(certs), error))
+            diagnostics = result.get("diagnostics") or {}
+            tokens = [t for t in (diagnostics.get("tokens") or []) if t]
+            card_present = any(r.get("card_present") for r in (diagnostics.get("pcsc_readers") or []))
+            token_ok = bool(tokens) or card_present
+            self.root.after(0, lambda: self._update_token_status(token_ok, tokens, error))
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _update_token_status(self, token_ok: bool, cert_count: int, error: str | None) -> None:
-        if not hasattr(self, "_canvas_text_ids") or not self._canvas_text_ids:
-            return
+    def _update_token_status(self, token_ok: bool, tokens: list[str], error: str | None) -> None:
         if error:
-            self.canvas.itemconfig(
-                self._canvas_text_ids["token"],
-                text=f"DSC token: error — {error}", fill=ERROR_RED,
-            )
+            self._set_status_line("token", f"DSC token: error — {error}", ERROR_RED)
         elif token_ok:
-            self.canvas.itemconfig(
-                self._canvas_text_ids["token"],
-                text=f"DSC token: detected ({cert_count} certificate(s))",
-                fill=SUCCESS_GREEN,
-            )
+            label = f" ({tokens[0]})" if tokens else ""
+            self._set_status_line("token", f"DSC token: detected{label}", SUCCESS_GREEN)
         else:
-            self.canvas.itemconfig(
-                self._canvas_text_ids["token"],
-                text="DSC token: not detected. Plug in the token and click Check token.",
-                fill=ERROR_RED,
+            self._set_status_line(
+                "token",
+                "DSC token: not detected. Plug in the token and click Check token.",
+                ERROR_RED,
             )
 
     def _on_uninstall(self) -> None:
@@ -773,20 +797,18 @@ class StatusApp:
         host_ok = is_host_installed()
         browser_ok = is_host_registered()
 
-        if hasattr(self, "_canvas_text_ids") and self._canvas_text_ids:
-            self.canvas.itemconfig(
-                self._canvas_text_ids["host"],
-                text=f"Native host: {'installed' if host_ok else 'not installed'}",
-                fill=SUCCESS_GREEN if host_ok else ERROR_RED,
-            )
-            self.canvas.itemconfig(
-                self._canvas_text_ids["browser"],
-                text=(f"Browser registered: {'yes' if browser_ok else 'no'}"
-                      if host_ok or not browser_ok else
-                      "Browser registered: yes (but host executable missing)"),
-                fill=(SUCCESS_GREEN if browser_ok else ERROR_RED)
-                if host_ok or not browser_ok else ERROR_RED,
-            )
+        self._set_status_line(
+            "host",
+            f"Native host: {'installed' if host_ok else 'not installed'}",
+            SUCCESS_GREEN if host_ok else ERROR_RED,
+        )
+        self._set_status_line(
+            "browser",
+            (f"Browser registered: {'yes' if browser_ok else 'no'}"
+             if host_ok or not browser_ok else
+             "Browser registered: yes (but host executable missing)"),
+            (SUCCESS_GREEN if browser_ok else ERROR_RED) if host_ok or not browser_ok else ERROR_RED,
+        )
         self.modules = discover_modules()
         self._populate_tree()
 

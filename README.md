@@ -56,12 +56,12 @@ installer build works on any computer** — no per-machine ID copying.
 
 You receive two things (shared separately):
 
-1. **`GiddhDSCBridge-Setup-1.6.0.exe`** — the Windows installer.
+1. **`GiddhDSCBridge-Setup-1.7.0.exe`** — the Windows installer.
 2. **`dsc-bridge/extension/`** — the browser extension folder.
 
 ### Windows (no admin required)
 
-1. **Run the installer** `GiddhDSCBridge-Setup-1.6.0.exe`. It is **unsigned**, so
+1. **Run the installer** `GiddhDSCBridge-Setup-1.7.0.exe`. It is **unsigned**, so
    Windows SmartScreen may warn → click **More info → Run anyway**.
 2. **Load the extension:** `chrome://extensions` → enable **Developer mode**
    (top-right) → **Load unpacked** → select the `dsc-bridge/extension/` folder.
@@ -78,7 +78,7 @@ You receive two things (shared separately):
 
 ### macOS
 
-1. **Open** `GiddhDSCBridge-1.6.0.dmg`, then run the `.pkg` inside. It is
+1. **Open** `GiddhDSCBridge-1.7.0.dmg`, then run the `.pkg` inside. It is
    **unsigned**, so Gatekeeper blocks a normal double-click → **right-click the
    `.pkg` → Open → Open** to run it anyway.
 2. **Load the extension** and **plug in the token** — same as Windows steps 2–3
@@ -183,8 +183,8 @@ installer bundles it; the machine only needs its **DSC token vendor driver**):
    (For a `file://` test page, also open **Details → Allow access to file URLs**.)
 2. Build + install the OS installer:
    ```bash
-   VERSION=1.6.0 ./packaging/macos/build_macos.sh
-   open dist/GiddhDSCBridge-1.6.0.dmg      # run the .pkg (right-click → Open; it is unsigned)
+   VERSION=1.7.0 ./packaging/macos/build_macos.sh
+   open dist/GiddhDSCBridge-1.7.0.dmg      # run the .pkg (right-click → Open; it is unsigned)
    ```
 3. Open `dsc-bridge/test-page/index.html` (or a page on an allowed domain,
    see "Domain restriction" above), plug in the token, read certs and sign.
@@ -207,7 +207,7 @@ cross-compile):
 builds mac + Windows + Linux on a version tag:
 
 ```bash
-git tag v1.6.0 && git push origin v1.6.0   # or run it manually from the Actions tab
+git tag v1.7.0 && git push origin v1.7.0   # or run it manually from the Actions tab
 ```
 
 ### Where each installer puts things

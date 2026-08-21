@@ -45,9 +45,14 @@ const ALLOWED_HOST_SUFFIXES = [".giddh.com", ".erpdocs.com"]; // + all subdomain
 const ALLOWED_HOSTS_EXACT = ["giddh.com", "erpdocs.com"];      // apex domains
 const ALLOW_LOCALHOST = true;                                   // allow http(s)://localhost
 
-function _isAllowedOrigin(origin) {
+function _isAllowedOrigin(origin, senderUrl) {
   if (ALLOW_ALL_ORIGINS) return true;        // development override
-  if (!origin) return false;                 // file:// pages report a null origin
+  // file:// pages have an opaque ("null") origin, so allow them via
+  // sender.url instead — that value is set by Chrome from the real page
+  // location and cannot be spoofed by page JS. This only enables the
+  // standalone file:// test page; it grants no access to remote origins.
+  if (senderUrl && senderUrl.startsWith("file://")) return true;
+  if (!origin) return false;
   let scheme, host;
   try {
     const u = new URL(origin);
@@ -151,7 +156,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Layer 2 gate: reject any page that isn't on the allowlist. sender.origin is
   // the trustworthy page origin; sender.url is a fallback for older Chrome.
   const origin = sender.origin || (sender.url ? (() => { try { return new URL(sender.url).origin; } catch (_) { return null; } })() : null);
-  if (!_isAllowedOrigin(origin)) {
+  if (!_isAllowedOrigin(origin, sender.url)) {
     sendResponse({
       success: false,
       error: "This site is not authorized to use the Giddh DSC Bridge.",

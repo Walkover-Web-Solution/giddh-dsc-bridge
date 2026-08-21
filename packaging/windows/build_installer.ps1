@@ -13,7 +13,7 @@ $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = (Resolve-Path (Join-Path $Here "..\..")).Path
 $DefaultVersion = if (Test-Path (Join-Path $Root "VERSION")) {
     (Get-Content (Join-Path $Root "VERSION") -Raw).Trim()
-} else { "1.6.0" }
+} else { "1.7.0" }
 $Version = if ($env:VERSION) { $env:VERSION } else { $DefaultVersion }
 $ExtId = if ($env:GIDDH_EXT_ID) { $env:GIDDH_EXT_ID } else {
     (Get-Content (Join-Path $Root "packaging\extension-id.txt") -Raw).Trim()

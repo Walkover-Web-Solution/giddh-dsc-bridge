@@ -1,0 +1,26 @@
+#!/bin/bash
+# Runs as root BEFORE the new payload is laid down.
+#
+# pkgbuild installs only overwrite files that are actually present in the new
+# payload — it never deletes pre-existing files/dirs that aren't part of the
+# new package. On a machine that has had multiple different builds installed
+# over time (e.g. a dev machine where PyInstaller froze the host against
+# different local Python versions across rebuilds), this leaves debris behind
+# in /usr/local/giddh-dsc-bridge/_internal: old Python.framework/Versions/X.Y
+# directories from a prior install can coexist with a new top-level "Python"
+# symlink that points at a DIFFERENT version — one that this particular
+# payload never wrote — producing a dangling symlink. The frozen binary then
+# fails at launch with "Failed to load Python shared library ... no such
+# file", which Chrome's native messaging surfaces as "Native host has exited."
+#
+# Removing the previous install directory before the new payload is copied
+# guarantees every install starts from a clean slate.
+set -e
+
+INSTALL_DIR="/usr/local/giddh-dsc-bridge"
+APP_DIR="/Applications/Giddh DSC Bridge.app"
+
+rm -rf "$INSTALL_DIR"
+rm -rf "$APP_DIR"
+
+exit 0

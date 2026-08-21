@@ -23,7 +23,7 @@ if os.path.exists(VERSION_FILE):
     with open(VERSION_FILE, "r", encoding="utf-8") as f:
         APP_VERSION = f.read().strip()
 else:
-    APP_VERSION = os.environ.get("VERSION", "1.6.0")
+    APP_VERSION = os.environ.get("VERSION", "1.7.0")
 
 # Choose the right icon file for the platform being built on.
 if sys.platform == "darwin":

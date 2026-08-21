@@ -137,7 +137,7 @@ class _SignerCache:
 # ── Request handlers ─────────────────────────────────────────────────────
 
 def _handle_ping() -> dict:
-    return {"success": True, "pong": True, "version": "1.6.0"}
+    return {"success": True, "pong": True, "version": "1.7.0"}
 
 
 # Driver selection/ranking now lives in pkcs11_signer (rank_driver_candidates)
@@ -261,4 +261,14 @@ if __name__ == "__main__":
     # must not write anything to stdout other than the worker's JSON reply.
     if WORKER_FLAG in sys.argv[1:]:
         sys.exit(worker_main())
+    # CLI diagnose mode: the status/companion app ("Check token" button)
+    # shells out with --diagnose and expects one plain JSON object on
+    # stdout — it is not a browser, so it cannot speak the length-prefixed
+    # native-messaging framing the stdin loop below uses. Without this
+    # branch the process just blocks on `_read_message()` forever (stdin is
+    # the app's own pipe, never closed), and the caller times out.
+    if "--diagnose" in sys.argv[1:]:
+        result = _handle_diagnose(None)
+        print(json.dumps(result))
+        sys.exit(0 if result.get("success") else 1)
     main()

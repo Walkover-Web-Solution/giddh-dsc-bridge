@@ -13,7 +13,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-DEFAULT_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || echo 1.6.0)"
+DEFAULT_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || echo 1.7.0)"
 VERSION="${VERSION:-$DEFAULT_VERSION}"
 EXT_ID="${GIDDH_EXT_ID:-$(tr -d '[:space:]' < "$ROOT/packaging/extension-id.txt")}"
 HOST_NAME="com.giddh.dsc.bridge"
@@ -98,6 +98,10 @@ cat > "$PKGROOT$INSTALL_DIR/$HOST_NAME.json" <<EOF
   "allowed_origins": ["chrome-extension://$EXT_ID/"]
 }
 EOF
+
+echo "==> Generating preinstall (wipes any previous install to avoid stale-file debris)"
+cp "$HERE/scripts/preinstall" "$SCRIPTS/preinstall"
+chmod +x "$SCRIPTS/preinstall"
 
 echo "==> Generating postinstall (registers manifest for all Chromium browsers)"
 cp "$HERE/scripts/postinstall" "$SCRIPTS/postinstall"
