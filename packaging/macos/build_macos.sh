@@ -28,10 +28,35 @@ rm -rf "$BUILD"; mkdir -p "$PKGROOT$INSTALL_DIR" "$SCRIPTS" "$DMGROOT" "$OUT"
 
 echo "==> Freezing native host with PyInstaller (onedir)"
 ( cd "$ROOT" && python3 -m PyInstaller --clean --noconfirm packaging/pyinstaller/giddh_dsc_host.spec )
+
+# COLLECT can return before all framework binaries (notably the Python shared
+# library at _internal/Python.framework/Versions/X.Y/Python) finish being
+# written to disk — leaving a half-built _internal/ where the bootloader then
+# fails with "Failed to load Python shared library ... no such file".
+# Sync + verify the critical files exist before staging.
+sync
+HOST_OUT="$ROOT/dist/giddh-dsc-host"
+HOST_BIN="$HOST_OUT/giddh-dsc-host"
+if [ ! -f "$HOST_BIN" ]; then
+  echo "ERROR: PyInstaller did not produce $HOST_BIN"
+  exit 1
+fi
+# Find the actual Python shared library PyInstaller bundled and confirm it
+# is on disk. _internal/Python is usually a symlink into a framework.
+PY_SHLIB=$(find "$HOST_OUT/_internal" -maxdepth 6 -type l -name 'Python' -o -name 'Python3' 2>/dev/null | head -1)
+if [ -z "$PY_SHLIB" ] || [ ! -e "$PY_SHLIB" ]; then
+  echo "ERROR: PyInstaller did not write the Python shared library (looked for"
+  echo "       _internal/Python{,3} symlinks in $HOST_OUT/_internal)"
+  echo "       _internal contents:"
+  ls -la "$HOST_OUT/_internal" 2>&1 | head -20 || true
+  exit 1
+fi
+
 # onedir output is a folder; install its contents into INSTALL_DIR so the
 # executable lands at $INSTALL_DIR/giddh-dsc-host with libs in _internal/ beside it.
-cp -R "$ROOT/dist/giddh-dsc-host/." "$PKGROOT$INSTALL_DIR/"
+cp -R "$HOST_OUT/." "$PKGROOT$INSTALL_DIR/"
 chmod +x "$PKGROOT$INSTALL_DIR/giddh-dsc-host"
+sync
 
 # Bake the version into the app so the GUI can display it, then build the
 # visible status/companion app (.app) and stage it under /Applications.
@@ -41,8 +66,27 @@ trap 'rm -f "$BUILDINFO"' EXIT
 
 echo "==> Building status app (Giddh DSC Bridge.app)"
 ( cd "$ROOT" && VERSION="$VERSION" python3 -m PyInstaller --clean --noconfirm packaging/pyinstaller/giddh_dsc_status.spec )
+
+# Same COLLECT race as the host: wait for the BUNDLE .app and its embedded
+# Python.framework to be fully written before staging.
+sync
+APP_OUT="$ROOT/dist/Giddh DSC Bridge.app"
+APP_BIN="$APP_OUT/Contents/MacOS/giddh-dsc-status"
+if [ ! -f "$APP_BIN" ]; then
+  echo "ERROR: PyInstaller did not produce $APP_BIN"
+  exit 1
+fi
+APP_PY_SHLIB=$(find "$APP_OUT/Contents/Frameworks" -maxdepth 8 -type l -name 'Python' -o -name 'Python3' 2>/dev/null | head -1)
+if [ -z "$APP_PY_SHLIB" ] || [ ! -e "$APP_PY_SHLIB" ]; then
+  echo "ERROR: PyInstaller did not write the Python shared library inside the .app"
+  echo "       Contents/Frameworks:"
+  ls -la "$APP_OUT/Contents/Frameworks" 2>&1 | head -10 || true
+  exit 1
+fi
+
 mkdir -p "$PKGROOT/Applications"
-cp -R "$ROOT/dist/Giddh DSC Bridge.app" "$PKGROOT/Applications/"
+cp -R "$APP_OUT" "$PKGROOT/Applications/"
+sync
 
 echo "==> Writing native-messaging manifest (ext id: $EXT_ID)"
 cat > "$PKGROOT$INSTALL_DIR/$HOST_NAME.json" <<EOF
