@@ -4,8 +4,10 @@ Giddh DSC Bridge — status / companion application.
 
 This is the small desktop window users see after installing the bridge. It is
 not required for signing (the browser extension talks directly to the native
-host), but it lets users verify the bridge status, attach PKCS#11 drivers, and
-uninstall cleanly.
+host), but it lets users check that a DSC token is detected and uninstall
+cleanly. PKCS#11 module management (listing, attaching, picking a token) is
+handled in the extension's test page / Giddh's own UI via listModules() and
+getCertificate(), not here.
 
 The window intentionally renders with a fixed light palette so text remains
 visible even when macOS runs the bundled Tk 8.5 runtime in Dark Mode.
@@ -152,8 +154,6 @@ SECONDARY_FG = "#6b7280"
 ACCENT_BG = "#f3f4f6"
 PRIMARY_BLUE = "#2563eb"
 PRIMARY_BLUE_HOVER = "#1d4ed8"
-ERROR_RED = "#dc2626"
-SUCCESS_GREEN = "#16a34a"
 
 
 def _apply_palette(root: tk.Tk) -> None:
@@ -219,23 +219,6 @@ def _apply_palette(root: tk.Tk) -> None:
               background=[("active", PRIMARY_BLUE_HOVER),
                           ("pressed", PRIMARY_BLUE_HOVER)],
               foreground=[("active", "#ffffff"), ("pressed", "#ffffff")])
-
-    # Checkbutton / separator
-    style.configure("TCheckbutton",
-                    background=LIGHT_BG, foreground=LIGHT_FG,
-                    font=("Helvetica", 12))
-    style.map("TCheckbutton",
-              background=[("active", LIGHT_BG)],
-              foreground=[("active", LIGHT_FG)])
-    style.configure("TSeparator", background=ACCENT_BG)
-
-    # Treeview (advanced section)
-    style.configure("Treeview",
-                    background="#ffffff", foreground=LIGHT_FG,
-                    fieldbackground="#ffffff", rowheight=22)
-    style.configure("Treeview.Heading",
-                    background=ACCENT_BG, foreground=LIGHT_FG,
-                    font=("Helvetica", 12, "bold"))
 
     # Force the toplevel window background to light.
     try:
@@ -366,66 +349,6 @@ def run_host_diagnose() -> dict:
 
 
 # -----------------------------------------------------------------------------
-# PKCS#11 module helpers
-# -----------------------------------------------------------------------------
-
-DEFAULT_MODULES = {
-    "macOS": [
-        ("ePass2003", "/usr/local/lib/libepsng_p11.so"),
-        ("ePass2003 (x64)", "/usr/local/lib/libepsng_p11.dylib"),
-        ("eToken", "/usr/local/lib/libeTPkcs11.dylib"),
-        ("WatchData", "/usr/local/lib/libWDP11.dylib"),
-        ("Safenet", "/usr/local/lib/libsfntpkcs11.dylib"),
-    ],
-    "Windows": [
-        ("ePass2003", r"C:\Windows\System32\epsng_p11.dll"),
-        ("eToken", r"C:\Windows\System32\eTPkcs11.dll"),
-        ("WatchData", r"C:\Windows\System32\WDPKCS.dll"),
-        ("Safenet", r"C:\Windows\System32\sfntpkcs11.dll"),
-    ],
-    "Linux": [
-        ("ePass2003", "/usr/lib/libepsng_p11.so"),
-        ("eToken", "/usr/lib/libeTPkcs11.so"),
-        ("WatchData", "/usr/lib/libWDP11.so"),
-        ("Safenet", "/usr/lib/libsfntpkcs11.so"),
-    ],
-}
-
-
-def load_config() -> dict:
-    config_path = Path.home() / ".giddh_dsc_bridge.json"
-    if config_path.exists():
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"modules": []}
-
-
-def save_config(config: dict) -> None:
-    config_path = Path.home() / ".giddh_dsc_bridge.json"
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-
-
-def discover_modules() -> list[dict]:
-    """Return PKCS#11 modules present on this machine."""
-    os_key = platform.system()
-    candidates = DEFAULT_MODULES.get(os_key, [])
-    found = []
-    for name, path in candidates:
-        p = Path(path)
-        if p.exists():
-            found.append({"name": name, "path": str(p), "default": False})
-    config = load_config()
-    for mod in config.get("modules", []):
-        if Path(mod["path"]).exists():
-            found.append(mod)
-    return found
-
-
-# -----------------------------------------------------------------------------
 # Main application window
 # -----------------------------------------------------------------------------
 
@@ -443,12 +366,8 @@ class StatusApp:
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f"{width}x{height}+{x}+{y}")
 
-        self.modules: list[dict] = []
-        self.advanced_visible = tk.BooleanVar(value=False)
-
         self._build_menu()
         self._build_ui()
-        self.refresh()
 
     # -------------------------------------------------------------------------
     # Menu bar (minimal — removes Tk's default "Widget Demonstration" items)
@@ -608,35 +527,6 @@ class StatusApp:
             c.coords(self._button_window, pad, y)
         y += 50
 
-        # ── Advanced section toggle ────────────────────────────────────────
-        if not hasattr(self, "_advanced_visible_lbl"):
-            self._advanced_visible = tk.BooleanVar(value=False)
-        c.create_line(pad, y, w - pad, y, fill=ACCENT_BG, width=1, tags="static")
-        y += 10
-
-        if not hasattr(self, "_advanced_check"):
-            self._advanced_check = ttk.Checkbutton(
-                self.canvas,
-                text="Show advanced PKCS#11 module manager",
-                variable=self._advanced_visible,
-                command=self._toggle_advanced_canvas,
-            )
-            self._advanced_check_window = c.create_window(pad, y, window=self._advanced_check,
-                                                         anchor="nw")
-        else:
-            c.coords(self._advanced_check_window, pad, y)
-        y += 40
-
-        # ── Advanced frame (Treeview + buttons) ────────────────────────────
-        if not hasattr(self, "_advanced_frame"):
-            self._advanced_frame = tk.Frame(self.canvas, bg=LIGHT_BG)
-            self._advanced_frame_window = c.create_window(pad, y,
-                                                         window=self._advanced_frame,
-                                                         anchor="nw")
-            self._build_advanced(self._advanced_frame)
-        else:
-            c.coords(self._advanced_frame_window, pad, y)
-
         # ── Footer text (drawn last, anchored to bottom) ───────────────────
         footer_y = max(y + 200, self.root.winfo_height() - 36)
         c.create_text(w // 2, footer_y,
@@ -644,55 +534,9 @@ class StatusApp:
                       fill=SECONDARY_FG, font=("Helvetica", 11),
                       width=520, justify="center", tags="static")
 
-    def _toggle_advanced_canvas(self) -> None:
-        if self._advanced_visible.get():
-            self._advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-            # Re-render to update footer position
-            self.canvas.after(10, self._render_canvas)
-        else:
-            self._advanced_frame.pack_forget()
-            self.canvas.after(10, self._render_canvas)
-
-    def _build_advanced(self, parent: ttk.Frame) -> None:
-        ttk.Label(parent, text="Detected PKCS#11 modules",
-                  style="Title.TLabel").pack(anchor=tk.W, pady=(0, 6))
-
-        tree_frame = ttk.Frame(parent, style="TFrame")
-        tree_frame.pack(fill=tk.BOTH, expand=True)
-
-        columns = ("name", "path", "default")
-        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=4)
-        self.tree.heading("name", text="Name")
-        self.tree.heading("path", text="Path")
-        self.tree.heading("default", text="Default")
-        self.tree.column("name", width=120)
-        self.tree.column("path", width=300)
-        self.tree.column("default", width=60, anchor=tk.CENTER)
-
-        vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        tree_frame.grid_columnconfigure(0, weight=1)
-        tree_frame.grid_rowconfigure(0, weight=1)
-
-        adv_btn_frame = ttk.Frame(parent, style="TFrame")
-        adv_btn_frame.pack(fill=tk.X, pady=(10, 0))
-        ttk.Button(adv_btn_frame, text="Attach module…", command=self._on_attach_module).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(adv_btn_frame, text="Detach", command=self._on_detach_module).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(adv_btn_frame, text="Set as default", command=self._on_set_default).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(adv_btn_frame, text="Rescan", command=self.refresh).pack(side=tk.LEFT)
-
     # -------------------------------------------------------------------------
     # Actions
     # -------------------------------------------------------------------------
-
-    def _toggle_advanced(self) -> None:
-        if self.advanced_visible.get():
-            self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-        else:
-            self.advanced_frame.pack_forget()
 
     def _show_about(self) -> None:
         messagebox.showinfo(
@@ -742,78 +586,6 @@ class StatusApp:
             "Uninstall",
             "Uninstall script is not bundled in this build.\n"
             "Please delete the app and native-host manifest manually.")
-
-    def _on_attach_module(self) -> None:
-        path = tk.filedialog.askopenfilename(
-            title="Select PKCS#11 library",
-            filetypes=[("PKCS#11 library", "*.so *.dylib *.dll")],
-        )
-        if not path:
-            return
-        name = Path(path).stem
-        config = load_config()
-        config["modules"].append({"name": name, "path": path, "default": False})
-        save_config(config)
-        self.refresh()
-
-    def _on_detach_module(self) -> None:
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("Detach", "Select a module first.")
-            return
-        config = load_config()
-        kept = []
-        removed = []
-        for item in self.tree.get_children():
-            vals = self.tree.item(item, "values")
-            if item in selected:
-                removed.append(vals[1])
-            else:
-                kept.append({"name": vals[0], "path": vals[1], "default": vals[2] == "Yes"})
-        config["modules"] = kept
-        save_config(config)
-        self.refresh()
-        if removed:
-            logger.info("Detached modules: %s", removed)
-
-    def _on_set_default(self) -> None:
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("Set default", "Select a module first.")
-            return
-        default_path = self.tree.item(selected[0], "values")[1]
-        config = load_config()
-        for mod in config.get("modules", []):
-            mod["default"] = (mod["path"] == default_path)
-        save_config(config)
-        self.refresh()
-
-    # -------------------------------------------------------------------------
-    # Refresh state
-    # -------------------------------------------------------------------------
-
-    def refresh(self) -> None:
-        # The old always-visible host/browser status lines were removed
-        # (see _render_canvas) — "Check token" now reports live results
-        # via a popup instead. Refresh just needs to keep the module list
-        # (which reflects local config, not fragile install-path guessing)
-        # up to date.
-        self.modules = discover_modules()
-        self._populate_tree()
-
-    def _populate_tree(self) -> None:
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        for mod in self.modules:
-            self.tree.insert(
-                "",
-                tk.END,
-                values=(
-                    mod["name"],
-                    mod["path"],
-                    "Yes" if mod.get("default") else "No",
-                ),
-            )
 
 
 def main() -> int:

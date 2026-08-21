@@ -97,47 +97,34 @@ also ships a small visible companion app, **Giddh DSC Bridge**:
 - **Linux:** app-menu entry **Giddh DSC Bridge** (`.desktop`).
 
 It opens to a centered welcome screen showing the app name, installed
-version, and a short description, followed by a live status card (native
-host installed?, registered with the browser?, DSC token detected?), a
-**Check token** button, and an **Uninstall…** button. A collapsed **advanced**
-section exposes the PKCS#11 module manager below for the rare cases that need it.
+version, and a short description, followed by a **Check token** button (reports
+live DSC token detection in a popup) and an **Uninstall…** button.
 
 ### PKCS#11 modules and tokens (advanced)
 
 Modules are detected automatically, so most users never touch this. When
-auto-detection is not enough — a driver installed in a non-standard path, or
-several vendor middlewares fighting over one machine — expand **Show advanced
-PKCS#11 module manager** in the companion app for the same controls as Adobe
-Acrobat's *Digital ID and Trusted Certificate Settings → PKCS#11 Modules and
-Tokens* pane:
+several tokens are plugged in at once, or auto-detection is not enough, use
+the **List Module** / **Token** picker / **Read Certificate** controls on the
+[test page](dsc-bridge/test-page/index.html) — it lists every detected PKCS#11
+module and lets you pick exactly which plugged-in token to read certificates
+from and sign with.
 
-| Control | Effect |
-| --- | --- |
-| **Attach module…** | Pick a PKCS#11 library (`.dylib` / `.so` / `.dll`) and add it to the list. Validated for existence, extension, and CPU architecture before it is saved. |
-| **Detach** | Remove a module *you* attached. Auto-detected modules cannot be detached. |
-| **Set as default** | Pin a module so it is always tried first. |
-| **Rescan** | Re-probe every module and refresh the table. |
+Each entry shows the module's manufacturer, library and Cryptoki version, and
+its live token state. A module that cannot drive your card reports "token not
+present" or "token not recognised" even when the card is inserted and
+completely free, so module error codes are **not** evidence about the card.
 
-Each row shows the module's manufacturer, library and Cryptoki version, and its
-live token state. Above the table, a **Card** line reports what the smartcard
-layer (PC/SC) sees — independently of any module. That distinction matters: a
-module that cannot drive your card reports "token not present" or "token not
-recognised" even when the card is inserted and completely free, so module error
-codes are **not** evidence about the card.
-
-Choices are stored in `dsc-bridge.json` (macOS
-`~/Library/Application Support/Giddh/`, Windows `%APPDATA%\Giddh\`, Linux
-`~/.config/giddh/`) and are picked up by the host on the **next request** — no
-browser restart needed. Attaching and pinning are available **only** in the
-desktop app: the web-facing API exposes a read-only `listModules()` so that a
-web page can never make the host load an arbitrary library.
+The web-facing API exposes a read-only `listModules()` and a `driver` argument
+on `getCertificate()`/signing so a web page can pick a token but can never make
+the host load an arbitrary library outside the detected set.
 
 **Troubleshooting**
 
 - *"Access to the native messaging host is forbidden"* → the loaded extension ID
   doesn't match the installer's. Confirm it is `klmgadogecbimgjkepdljfljajphemfl`.
-- *"No PKCS#11 module available"* → install the token's 64-bit vendor driver, or
-  attach its module in the companion app, then click **Check token**.
+- *"No PKCS#11 module available"* → install the token's 64-bit vendor driver,
+  then click **Check token** in the companion app or **Run Diagnose** on the
+  test page.
 - *"A card is inserted … but no PKCS#11 module could open it"* (code
   `TOKEN_UNSUPPORTED_BY_MODULE`) → the card is present and **not** locked; the
   PKCS#11 library for that token is missing or is the wrong one. Install your DSC

@@ -146,12 +146,17 @@ macOS before a custom menubar was installed; the app now always installs its
 own minimal menu). Layout, top to bottom:
 
 1. **Hero**: app icon, name, `Version X.Y.Z`, one-line description — centered.
-2. **Status card**: native host installed?, registered with the browser?, DSC
-   token detected? (live, refreshed on open and after "Check token").
-3. **Primary actions**: Check token, Uninstall…, Quit.
-4. **Advanced (collapsed by default)**: a checkbox reveals the PKCS#11 module
-   table + Attach/Detach/Set default/Rescan — most users never need this, so
-   it stays out of the way.
+2. **Primary actions**: Check token (on-demand popup with live results),
+   Uninstall…, Quit.
+
+There is no PKCS#11 module manager or persistent status card in this app —
+module listing, the token picker, and certificate reading/signing live in the
+[test page](dsc-bridge/test-page/index.html) (`listModules()` /
+`getCertificate(driver)`), which the extension's real callers also use. A
+persistent status card was tried and removed: `_find_host_executable()`-based
+detection is only reliable right after a fresh install, so it produced false
+"not installed" errors on later reopens — an on-demand "Check token" button
+that reports the live result via popup replaced it.
 
 The window forces a light `ttk` palette (`_apply_palette`) regardless of OS
 dark mode, because the bundled Tk 8.5 runtime on macOS renders label text
