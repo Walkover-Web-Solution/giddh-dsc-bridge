@@ -39,6 +39,12 @@ dsc-bridge/
     background.js            service worker: native messaging relay + ORIGIN allowlist
     content-script.js        bridges page <-> background via postMessage
     bridge-inject.js          injects window.GiddhBridge into the page context
+    popup.html/css/js        toolbar popup: logo + version + "Powered by Giddh"
+                              only. Read-only — never calls chrome.runtime.sendMessage,
+                              so it does not touch the native-messaging path or its
+                              origin gate (see popup.js).
+    icons/                   icon16/32/48/128.png, regenerated copies of the root
+                              icons/app_source_1024.png master (see §7)
   native-host/             Python source (not run directly by end users — frozen by PyInstaller)
     giddh_dsc_host.py         headless host: stdin/stdout native-messaging protocol
     giddh_dsc_status.py       visible companion app (Tkinter GUI)
@@ -204,6 +210,19 @@ img.save("icons/app.ico", format="ICO",
 Consumers: `packaging/pyinstaller/*.spec` (`icon=` param + bundled `datas`),
 `packaging/windows/installer.iss` (`SetupIconFile`), and `giddh_dsc_status.py`
 (`get_icon_path()` renders the hero logo at runtime).
+
+`dsc-bridge/extension/icons/icon{16,32,48,128}.png` are a **second, separate**
+set of copies of the same master (a Chrome extension can only reference files
+inside its own package directory, so the root `icons/` folder cannot be
+referenced directly from `manifest.json`). Regenerate them the same way after
+replacing `icons/app_source_1024.png`:
+
+```python
+from PIL import Image
+img = Image.open("icons/app_source_1024.png").convert("RGBA")
+for s in (16, 32, 48, 128):
+    img.resize((s, s), Image.Resampling.LANCZOS).save(f"dsc-bridge/extension/icons/icon{s}.png")
+```
 
 ## 8. Windows code signing (SSL.com eSigner) — architecture only, inactive
 

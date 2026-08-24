@@ -17,6 +17,10 @@
     return new Promise(function (resolve, reject) {
       var id = ++_reqId;
       _pending[id] = { resolve: resolve, reject: reject };
+      // targetOrigin "*" is safe here: this posts to the SAME window
+      // (content-script.js only accepts `event.source === window`), and the
+      // payload is only the caller-supplied action/PIN/hash this page's own
+      // code passed in — nothing secret is being broadcast to other origins.
       window.postMessage({
         __giddhDsc: true,
         id: id,
@@ -27,6 +31,14 @@
   }
 
   window.addEventListener("message", function (event) {
+    // SECURITY NOTE: `event.source !== window` scopes this to messages the
+    // top document posts to itself — an embedded iframe on the same page
+    // cannot post a reply this code will accept. The response is matched
+    // back to its request purely via the locally-generated `id` in
+    // `_pending`, so a spoofed message can, at worst, resolve/reject a
+    // promise this same page already created; it cannot originate a new
+    // signing/certificate request (only `_send` below does that) or read
+    // any PIN/hash this script did not already send itself.
     if (event.source !== window || !event.data || !event.data.__giddhDscResp) return;
     var entry = _pending[event.data.id];
     if (!entry) return;

@@ -5,6 +5,22 @@
   "description": "Connects Giddh e-signature to hardware DSC tokens via PKCS#11. No per-origin license required.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzF5qHhLb53uXc73gAu6ajlVoOE8xQntxN4kzyk8hEKHX9MK7+XZAIYrLhPpjQJrY5gr4cN11D7CBfORhJXtRvDfHViTZHExa4hIYMrud5VEunfZibAJdP7WmSp2QurFNDIRwTUBPAHBIcSLs9lUZId5a0sZcyZMdcTAwMtUT7RqA+Y7Psw2nrzdel2Ry0uNzcgkV688iMkPeNOVogsxx+fVtOruFWFYP6/uyxVBO1W7OhdEoH11+hDy7BNjTKmvVNwn2VLeUJOqGCbaknSL2oRG/EEZ9p1V+q4Toyeg2ENvc5ZpmuPkjuQudZwMMqsqPFbxyZMAjqpXSp9kfUHKrYwIDAQAB",
   "permissions": ["nativeMessaging"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Giddh DSC Bridge",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
   "background": {
     "service_worker": "background.js"
   },
@@ -12,7 +28,6 @@
     {
       "matches": [
         "https://*.giddh.com/*",
-        "https://*.erpdocs.com/*",
         "http://localhost/*",
         "http://127.0.0.1/*",
         "https://localhost/*",
@@ -29,7 +44,6 @@
       "resources": ["bridge-inject.js"],
       "matches": [
         "https://*.giddh.com/*",
-        "https://*.erpdocs.com/*",
         "http://localhost/*",
         "http://127.0.0.1/*",
         "https://localhost/*",

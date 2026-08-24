@@ -150,7 +150,7 @@ the host load an arbitrary library outside the detected set.
 
 ## Domain restriction — locked for production
 
-The bridge only responds to `https://*.giddh.com`, `https://*.erpdocs.com`, and
+The bridge only responds to `https://*.giddh.com` and
 `localhost`/`127.0.0.1` (for local dev). This is controlled by ONE flag in
 `extension/background.js`:
 
@@ -223,7 +223,7 @@ git tag v1.7.0 && git push origin v1.7.0   # or run it manually from the Actions
 ## Production checklist
 
 - [ ] `ALLOW_ALL_ORIGINS = false` in `background.js` (default) and `manifest.json`
-      `matches` point at real domains (default: `giddh.com`, `erpdocs.com`).
+      `matches` point at real domains (default: `giddh.com`).
 - [ ] `packaging/extension-id.txt` matches the loaded extension's ID.
 - [ ] Installer built + installed on each target OS; token driver present (64-bit).
 - [ ] `test-page/index.html` (or the real app) reads certs and signs on each target.

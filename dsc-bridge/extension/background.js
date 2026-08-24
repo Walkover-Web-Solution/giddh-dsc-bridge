@@ -41,9 +41,9 @@ const ALLOW_ALL_ORIGINS = false;
 // Production allowlist (used only when ALLOW_ALL_ORIGINS is false).
 // sender.origin is set by Chrome from the real page origin and cannot be
 // spoofed by page JS. Keep in sync with "matches" in manifest.json.
-const ALLOWED_HOST_SUFFIXES = [".giddh.com", ".erpdocs.com"]; // + all subdomains
-const ALLOWED_HOSTS_EXACT = ["giddh.com", "erpdocs.com"];      // apex domains
-const ALLOW_LOCALHOST = true;                                   // allow http(s)://localhost
+const ALLOWED_HOST_SUFFIXES = [".giddh.com"]; // + all subdomains
+const ALLOWED_HOSTS_EXACT = ["giddh.com"];    // apex domain
+const ALLOW_LOCALHOST = true;                 // allow http(s)://localhost
 
 function _isAllowedOrigin(origin, senderUrl) {
   if (ALLOW_ALL_ORIGINS) return true;        // development override
@@ -148,6 +148,16 @@ function _nativeCall(payload) {
   });
 }
 
+// SECURITY NOTE: this is the ONLY listener that can reach the native host, so
+// every message that arrives here MUST pass the origin gate below before any
+// PKCS#11 call is queued. Today only content-script.js (relaying an allowed
+// page's postMessage) ever sends a GIDDH_DSC message, so `sender.tab` is
+// always populated here. The popup (popup.js) deliberately never sends one —
+// see the comment at the top of popup.js. If that ever changes, do not just
+// widen `_isAllowedOrigin`: a message from this extension's own pages (popup/
+// options) arrives WITHOUT `sender.tab`, which is a reliable signal it did not
+// come from a content script in a tab, but that distinction needs its own
+// deliberate review rather than being folded into the web-origin allowlist.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!(msg && msg.type === "GIDDH_DSC" && msg.action)) {
     return; // not ours — let other listeners handle it
@@ -165,7 +175,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false; // responded synchronously
   }
 
-  // Strip the wrapper before sending to the native host.
+  // Strip the wrapper before sending to the native host. Copying fields one
+  // by one (instead of e.g. `Object.assign({}, msg)`) is a deliberate
+  // allowlist: only these exact keys ever reach the PKCS#11 process, so an
+  // allowed page cannot smuggle extra/unexpected fields into the native
+  // messaging payload. SECURITY NOTE: values are forwarded as-is (no type
+  // or length validation) — the native host is trusted to validate its own
+  // input, so this is defense-in-depth only, not the primary boundary.
   const payload = { action: msg.action };
   if (msg.hash !== undefined) payload.hash = msg.hash;
   if (msg.algorithm !== undefined) payload.algorithm = msg.algorithm;

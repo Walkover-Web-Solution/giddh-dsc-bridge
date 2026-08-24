@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Giddh DSC Bridge</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!--
+    Giddh DSC Bridge — toolbar popup (informational only)
+    =====================================================
+    READ-ONLY: renders values already available to any extension page
+    (chrome.runtime.getManifest()) and never sends a message to
+    background.js / the native host. It cannot affect, bypass, or widen
+    the extension's existing security model (see background.js's
+    ALLOWED_HOST_SUFFIXES / _isAllowedOrigin gate).
+  -->
+  <div class="wrap">
+    <img src="icons/icon128.png" width="72" height="72" alt="Giddh DSC Bridge logo" class="logo">
+    <span id="appVersion" class="version">Version …</span>
+    <span class="tagline">Powered by Giddh</span>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

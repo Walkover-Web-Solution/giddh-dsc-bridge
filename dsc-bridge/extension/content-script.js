@@ -26,6 +26,13 @@
   (document.head || document.documentElement).appendChild(script);
 
   // ── Relay between page (postMessage) and background (chrome.runtime) ──
+  // SECURITY NOTE: `event.source !== window` rejects messages posted from
+  // any other frame (e.g. an untrusted third-party iframe embedded in an
+  // allowed page); only messages the top document posts to itself are
+  // relayed. This still runs on every page matched by manifest.json's
+  // content_scripts (including localhost/file://), so background.js's own
+  // origin allowlist (sender.origin) is the real trust boundary — this
+  // content script is just a transport, not a security decision point.
   window.addEventListener("message", function (event) {
     if (event.source !== window || !event.data || !event.data.__giddhDsc) return;
 
@@ -33,6 +40,10 @@
     var action = event.data.action;
     var data = event.data.data || {};
 
+    // Field-by-field copy (not a spread/passthrough of `data`) is a
+    // deliberate allowlist: only these known keys ever leave this script,
+    // so a page cannot inject arbitrary extra properties into the message
+    // that reaches background.js / the native host.
     var bgMsg = { type: "GIDDH_DSC", action: action };
     if (data.hash !== undefined) bgMsg.hash = data.hash;
     if (data.algorithm !== undefined) bgMsg.algorithm = data.algorithm;
