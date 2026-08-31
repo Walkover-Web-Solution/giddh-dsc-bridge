@@ -23,6 +23,8 @@
     button:disabled { opacity:.5; cursor:not-allowed; }
     input, select { width:100%; padding:9px 11px; border:2px solid var(--bd); border-radius:8px; font-size:14px; background:#fff; }
     label { font-size:12px; font-weight:600; color:var(--slate); display:block; margin:10px 0 5px; }
+    .checkline { display:flex; align-items:center; gap:8px; font-weight:500; }
+    .checkline input[type="checkbox"] { width:auto; margin:0; }
     pre { background:#0f172a; color:#e2e8f0; border-radius:8px; padding:14px; font-size:12px;
           overflow:auto; max-height:340px; white-space:pre-wrap; word-break:break-word; }
     .row { display:flex; gap:10px; flex-wrap:wrap; }
@@ -69,6 +71,10 @@
       <p class="sub" style="margin:0 0 6px;">Signs the SHA-256 of the text below with the selected certificate.</p>
       <label>Text to hash &amp; sign</label>
       <input id="text" value="hello dsc bridge">
+      <label class="checkline" style="margin:8px 0 0;">
+        <input type="checkbox" id="rawHash">
+        Input is already a SHA-256 hash (base64) — sign as-is, do not hash
+      </label>
       <label>Token PIN</label>
       <input id="pin" type="password" placeholder="Token PIN">
       <div class="row" style="margin-top:12px;"><button id="btnSign" disabled>Sign</button></div>
@@ -224,9 +230,15 @@
     };
     $("btnSign").onclick = async () => {
       if (selected === null) return;
-      const enc = new TextEncoder().encode($("text").value);
-      const digest = await crypto.subtle.digest("SHA-256", enc);
-      const hashB64 = await toB64(digest);
+      let hashB64;
+      if ($("rawHash").checked) {
+        hashB64 = $("text").value.trim();
+        if (!hashB64) { out("Paste a base64-encoded SHA-256 hash into the input first."); return; }
+      } else {
+        const enc = new TextEncoder().encode($("text").value);
+        const digest = await crypto.subtle.digest("SHA-256", enc);
+        hashB64 = await toB64(digest);
+      }
       out("Signing…");
       const r = await window.GiddhBridge.signHash(hashB64, "SHA256", certs[selected].certId, $("pin").value);
       out(r);
