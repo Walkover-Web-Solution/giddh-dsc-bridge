@@ -21,9 +21,11 @@ theme styles them correctly).
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import platform
+import shutil
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -51,7 +53,8 @@ def get_app_root() -> Path:
 
 def _resolve_version() -> str:
     """Return the build-time version if available, else the repo VERSION file."""
-    buildinfo = get_app_root() / "_buildinfo.py"
+    app_root = get_app_root()
+    buildinfo = app_root / "_buildinfo.py"
     if buildinfo.exists():
         try:
             ns = {}
@@ -61,16 +64,39 @@ def _resolve_version() -> str:
                 return v
         except Exception:
             pass
-    version_file = get_app_root() / "VERSION"
-    if version_file.exists():
+
+    version_candidates = [app_root / "VERSION"]
+    if not getattr(sys, "frozen", False):
+        # Development: this script lives at dsc-bridge/native-host/, so the
+        # repo VERSION file is two directories up.
+        version_candidates.append(Path(__file__).resolve().parent.parent.parent / "VERSION")
+
+    for version_file in version_candidates:
+        if version_file.exists():
+            try:
+                return version_file.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+
+    return "1.0.0"
+
+
+def _get_buildinfo() -> dict:
+    """Read build-time metadata written by the packaging script."""
+    buildinfo = get_app_root() / "_buildinfo.py"
+    if buildinfo.exists():
         try:
-            return version_file.read_text(encoding="utf-8").strip()
+            ns = {}
+            exec(compile(buildinfo.read_text(encoding="utf-8"), str(buildinfo), "exec"), ns)
+            return ns
         except Exception:
             pass
-    return "1.7.0"
+    return {}
 
 
-VERSION = _resolve_version()
+BUILDINFO = _get_buildinfo()
+VERSION = BUILDINFO.get("VERSION") or _resolve_version()
+EXT_ID = BUILDINFO.get("GIDDH_EXT_ID", "")
 APP_NAME = "Giddh DSC Bridge"
 APP_DESCRIPTION = "Connect your DSC token to Giddh for secure, client-side PDF signing."
 
@@ -129,10 +155,86 @@ def get_tray_icon_path() -> str | None:
     return None
 
 
+def install_native_host() -> tuple[bool, str | None]:
+    """Install the bundled native host and browser manifest (user-level).
+
+    The companion app ships with the frozen host binary inside its bundle.
+    On first launch it copies the binary and support libraries to the user's
+    Application Support directory and registers the native-messaging manifest
+    for the common Chromium-based browsers. This avoids an installer package
+    and therefore a Developer ID Installer certificate.
+    """
+    if not is_mac():
+        # The .pkg/.deb installers handle this on other platforms.
+        return True, None
+
+    app_root = get_app_root()
+    bundled_host = app_root / "giddh-dsc-host"
+    if not bundled_host.exists():
+        return False, "Bundled native host not found."
+
+    if not EXT_ID:
+        return False, "Extension ID not available; cannot register native host."
+
+    support_dir = Path.home() / "Library" / "Application Support" / "Giddh DSC Bridge"
+    try:
+        support_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        return False, f"Cannot create support directory: {exc}"
+
+    installed_host = support_dir / "giddh-dsc-host"
+    try:
+        shutil.copy2(bundled_host, installed_host)
+        os.chmod(installed_host, 0o755)
+    except Exception as exc:
+        return False, f"Failed to copy native host: {exc}"
+
+    bundled_internal = app_root / "_internal"
+    if bundled_internal.exists():
+        dest_internal = support_dir / "_internal"
+        try:
+            if dest_internal.exists():
+                shutil.rmtree(dest_internal)
+            shutil.copytree(bundled_internal, dest_internal)
+        except Exception as exc:
+            return False, f"Failed to copy native host libraries: {exc}"
+
+    manifest = {
+        "name": "com.giddh.dsc.bridge",
+        "description": "Giddh DSC Bridge — PKCS#11 token signing",
+        "path": str(installed_host),
+        "type": "stdio",
+        "allowed_origins": [f"chrome-extension://{EXT_ID}/"],
+    }
+    manifest_json = json.dumps(manifest, indent=2)
+
+    browsers = {
+        "Chrome": Path.home() / "Library" / "Application Support" / "Google" / "Chrome",
+        "Brave": Path.home() / "Library" / "Application Support" / "BraveSoftware" / "Brave-Browser",
+        "Edge": Path.home() / "Library" / "Application Support" / "Microsoft Edge",
+        "Chromium": Path.home() / "Library" / "Application Support" / "Chromium",
+    }
+
+    installed_any = False
+    for name, base in browsers.items():
+        nm_dir = base / "NativeMessagingHosts"
+        try:
+            nm_dir.mkdir(parents=True, exist_ok=True)
+            manifest_path = nm_dir / "com.giddh.dsc.bridge.json"
+            manifest_path.write_text(manifest_json, encoding="utf-8")
+            installed_any = True
+        except Exception as exc:
+            logger.warning("Could not register host for %s: %s", name, exc)
+
+    if not installed_any:
+        return False, "Could not register the native host for any browser."
+
+    return True, None
+
+
 # -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -393,6 +495,20 @@ def main() -> int:
 
     root = tk.Tk()
     _apply_palette(root)
+
+    # On macOS the app ships the native host inside its bundle; install it
+    # (and the browser manifest) into the user's Application Support folder
+    # on first launch so the extension can connect without an installer pkg.
+    if is_mac():
+        ok, err = install_native_host()
+        if not ok:
+            logger.error("Native host installation failed: %s", err)
+            messagebox.showerror(
+                f"{APP_NAME} — Setup failed",
+                f"Could not install the DSC bridge host:\n\n{err}",
+            )
+            return 1
+
     app = StatusApp(root)
 
     # macOS Aqua Tk 8.5 windowed apps can fail to map their window onto the

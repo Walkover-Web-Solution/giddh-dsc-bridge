@@ -35,6 +35,24 @@ else:
 
 # Ensure packaged resources are discoverable next to the frozen executable.
 datas, binaries, hiddenimports = [], [], []
+
+# Bundle the VERSION file and build info (version + extension id) for runtime lookup.
+if os.path.exists(VERSION_FILE):
+    datas.append((VERSION_FILE, "."))
+
+BUILDINFO_FILE = os.path.join(HOST_DIR, "_buildinfo.py")
+if os.path.exists(BUILDINFO_FILE):
+    datas.append((BUILDINFO_FILE, "."))
+
+# Bundle the frozen native host so the companion app can install it on first launch.
+HOST_DIST_DIR = os.path.join(ROOT_DIR, "dist", "giddh-dsc-host")
+HOST_EXE = os.path.join(HOST_DIST_DIR, "giddh-dsc-host")
+if os.path.exists(HOST_EXE):
+    datas.append((HOST_EXE, "."))
+HOST_INTERNAL = os.path.join(HOST_DIST_DIR, "_internal")
+if os.path.exists(HOST_INTERNAL):
+    datas.append((HOST_INTERNAL, "_internal"))
+
 for pkg in ("pkcs11", "cryptography", "cffi", "asn1crypto"):
     try:
         d, b, h = collect_all(pkg)
