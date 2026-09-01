@@ -60,7 +60,7 @@ jobs:
 
       # =====================================================================
       # macOS
-      # Import certs -> Build .pkg inside DMG -> Sign DMG -> Notarize -> Verify
+      # Import certs -> Build .pkg -> Notarize/Staple PKG -> Build DMG -> Notarize DMG
       # =====================================================================
 
       - name: Import Apple Developer ID certificate
@@ -132,10 +132,14 @@ jobs:
             exit 1
           fi
 
+          if [ -z "$INSTALLER_IDENTITY" ]; then
+            echo "::warning::Developer ID Installer certificate missing in .p12 secret. PKG files must be signed with a Developer ID Installer cert to pass Gatekeeper."
+          fi
+
           echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
           echo "APPLE_INSTALLER_IDENTITY=$INSTALLER_IDENTITY" >> "$GITHUB_ENV"
           echo "Application Identity: $SIGNING_IDENTITY"
-          echo "Installer Identity: ${INSTALLER_IDENTITY:-'(None found in .p12)'}"
+          echo "Installer Identity: ${INSTALLER_IDENTITY:-'NOT FOUND'}"
 
       - name: Build macOS .dmg
         if: matrix.os == 'macos-latest'
@@ -153,32 +157,7 @@ jobs:
 
           ./packaging/macos/build_macos.sh
 
-      - name: Sign macOS DMG
-        if: matrix.os == 'macos-latest'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          DMG=$(find dist -maxdepth 1 -type f -name "GiddhDSCBridge-*.dmg" | head -1)
-
-          if [ -z "$DMG" ]; then
-            echo "::error::macOS DMG not found."
-            exit 1
-          fi
-
-          echo "Signing DMG container with Developer ID Application..."
-          codesign \
-            --force \
-            --verbose \
-            --options runtime \
-            --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" \
-            "$DMG"
-
-          echo "Verifying DMG signature..."
-          codesign --verify --verbose=2 "$DMG"
-
-      - name: Notarize macOS DMG
+      - name: Notarize and Staple macOS Artifacts
         if: matrix.os == 'macos-latest'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -188,58 +167,81 @@ jobs:
         run: |
           set -euo pipefail
 
-          DMG=$(find dist -maxdepth 1 -type f -name "GiddhDSCBridge-*.dmg" | head -1)
+          PKG=$(find dist -maxdepth 2 -type f -name "*.pkg" | head -1 || true)
+          DMG=$(find dist -maxdepth 1 -type f -name "*.dmg" | head -1 || true)
 
-          if [ -z "$DMG" ]; then
-            echo "::error::DMG not found for notarization."
-            exit 1
-          fi
+          # 1. Notarize and Staple .pkg if generated individually
+          if [ -n "$PKG" ]; then
+            echo "Submitting PKG to Apple Notary Service..."
+            set +e
+            SUBMIT_PKG_OUTPUT=$(xcrun notarytool submit "$PKG" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait 2>&1)
+            set -e
+            echo "$SUBMIT_PKG_OUTPUT"
 
-          echo "Submitting DMG to Apple Notary Service..."
-
-          set +e
-          SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait 2>&1)
-          SUBMIT_EXIT_CODE=$?
-          set -e
-
-          echo "$SUBMIT_OUTPUT"
-
-          SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | awk '/id:/ {print $2; exit}')
-
-          if [ $SUBMIT_EXIT_CODE -ne 0 ] || ! echo "$SUBMIT_OUTPUT" | grep -q "status: Accepted"; then
-            echo "::error::Apple notarization failed."
-            if [ -n "$SUBMISSION_ID" ]; then
-              echo "Fetching Apple notarization rejection log for submission $SUBMISSION_ID..."
-              xcrun notarytool log "$SUBMISSION_ID" \
-                --apple-id "$APPLE_ID" \
-                --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-                --team-id "$APPLE_TEAM_ID" || true
+            if echo "$SUBMIT_PKG_OUTPUT" | grep -q "status: Accepted"; then
+              echo "Stapling notarization ticket to PKG..."
+              xcrun stapler staple "$PKG" || true
             fi
-            exit 1
           fi
 
-          echo "Stapling notarization ticket..."
-          xcrun stapler staple "$DMG"
+          # 2. Sign, Notarize, and Staple .dmg container
+          if [ -n "$DMG" ]; then
+            echo "Signing DMG container..."
+            codesign \
+              --force \
+              --verbose \
+              --options runtime \
+              --timestamp \
+              --sign "$APPLE_SIGNING_IDENTITY" \
+              "$DMG"
 
-          echo "Validating stapled ticket..."
-          xcrun stapler validate "$DMG"
+            echo "Submitting DMG to Apple Notary Service..."
+            set +e
+            SUBMIT_DMG_OUTPUT=$(xcrun notarytool submit "$DMG" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait 2>&1)
+            SUBMIT_EXIT_CODE=$?
+            set -e
 
-          echo "Verifying mounted content with Gatekeeper..."
-          MOUNT_DIR=$(mktemp -d)
-          hdiutil attach "$DMG" -mountpoint "$MOUNT_DIR" -nobrowse -quiet
-          
-          if [ -d "$MOUNT_DIR"/*.app ]; then
-            spctl --assess --type execute --verbose=4 "$MOUNT_DIR"/*.app
-          elif [ -f "$MOUNT_DIR"/*.pkg ]; then
-            spctl --assess --type install --verbose=4 "$MOUNT_DIR"/*.pkg
+            echo "$SUBMIT_DMG_OUTPUT"
+            SUBMISSION_ID=$(echo "$SUBMIT_DMG_OUTPUT" | awk '/id:/ {print $2; exit}')
+
+            if [ $SUBMIT_EXIT_CODE -ne 0 ] || ! echo "$SUBMIT_DMG_OUTPUT" | grep -q "status: Accepted"; then
+              echo "::error::Apple notarization failed for DMG."
+              if [ -n "$SUBMISSION_ID" ]; then
+                xcrun notarytool log "$SUBMISSION_ID" \
+                  --apple-id "$APPLE_ID" \
+                  --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                  --team-id "$APPLE_TEAM_ID" || true
+              fi
+              exit 1
+            fi
+
+            echo "Stapling notarization ticket to DMG..."
+            xcrun stapler staple "$DMG"
+
+            echo "Validating DMG stapled ticket..."
+            xcrun stapler validate "$DMG"
+
+            echo "Verifying mounted app content with Gatekeeper..."
+            MOUNT_DIR=$(mktemp -d)
+            hdiutil attach "$DMG" -mountpoint "$MOUNT_DIR" -nobrowse -quiet
+            
+            if [ -d "$MOUNT_DIR"/*.app ]; then
+              spctl --assess --type execute --verbose=4 "$MOUNT_DIR"/*.app
+            elif [ -f "$MOUNT_DIR"/*.pkg ]; then
+              spctl --assess --type install --verbose=4 "$MOUNT_DIR"/*.pkg
+            fi
+            
+            hdiutil detach "$MOUNT_DIR" -quiet
+            echo "macOS DMG and inner package notarization verified successfully!"
           fi
-          
-          hdiutil detach "$MOUNT_DIR" -quiet
-          echo "macOS DMG notarization and Gatekeeper verification completed successfully!"
 
       # =====================================================================
       # Windows
