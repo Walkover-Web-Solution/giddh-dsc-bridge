@@ -33,22 +33,25 @@ INTEGRATION.md   API contract for the Giddh web app + backend
 
 ## How the extension and installer connect
 
-The extension has a **fixed ID** baked in via the `key` field in
-`extension/manifest.json`, so it is the **same on every machine**:
+The **published** extension (Chrome Web Store) has a store-assigned ID:
 
 ```
-klmgadogecbimgjkepdljfljajphemfl
+pbnmboohmdoknhpflpmeocccojkkjgng
 ```
 
 The installer authorizes exactly that ID in the native host's `allowed_origins`
 (read from `packaging/extension-id.txt`). Because both sides are fixed, **one
 installer build works on any computer** — no per-machine ID copying.
 
-- The ID is derived from `giddh-extension-key.pem` (the private signing key).
-  **Keep that file safe and never commit it** (it is gitignored). You only need
-  it to package a signed `.crx`; the public half already lives in the manifest.
-- To rotate the ID: regenerate the key, put the new public key in the manifest
-  `key`, and write the new ID into `packaging/extension-id.txt`.
+- The store ID is assigned by the Chrome Web Store on first upload and stays
+  fixed for the item forever. The store rejects the manifest `key` field, so
+  the published build does not carry one.
+- The **dev/unpacked** copy in `dsc-bridge/extension/` still carries the `key`
+  field (public half of `giddh-extension-key.pem`), so loading it unpacked
+  yields the old dev ID `klmgadogecbimgjkepdljfljajphemfl`. An installer whose
+  `allowed_origins` lists only the store ID will refuse that unpacked copy —
+  for local dev testing, use your existing dev install or build an installer
+  that whitelists both IDs.
 - If a build's ID ever mismatches the loaded extension, Chrome shows
   *"Access to the specified native messaging host is forbidden."*
 
@@ -121,7 +124,8 @@ the host load an arbitrary library outside the detected set.
 **Troubleshooting**
 
 - *"Access to the native messaging host is forbidden"* → the loaded extension ID
-  doesn't match the installer's. Confirm it is `klmgadogecbimgjkepdljfljajphemfl`.
+  doesn't match the installer's. The store-installed extension must read
+  `pbnmboohmdoknhpflpmeocccojkkjgng`.
 - *"No PKCS#11 module available"* → install the token's 64-bit vendor driver,
   then click **Check token** in the companion app or **Run Diagnose** on the
   test page.
