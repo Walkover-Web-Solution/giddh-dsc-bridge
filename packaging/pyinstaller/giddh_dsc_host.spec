@@ -26,7 +26,7 @@ if os.path.exists(VERSION_FILE):
     with open(VERSION_FILE, "r", encoding="utf-8") as f:
         APP_VERSION = f.read().strip()
 else:
-    APP_VERSION = os.environ.get("VERSION", "1.7.0")
+    APP_VERSION = os.environ.get("VERSION", "1.1.0")
 
 if sys.platform == "win32":
     ICON_PATH = os.path.join(ROOT_DIR, "icons", "app.ico")

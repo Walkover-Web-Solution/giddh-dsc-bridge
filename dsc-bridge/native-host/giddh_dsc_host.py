@@ -137,7 +137,7 @@ class _SignerCache:
 # ── Request handlers ─────────────────────────────────────────────────────
 
 def _handle_ping() -> dict:
-    return {"success": True, "pong": True, "version": "1.7.0"}
+    return {"success": True, "pong": True, "version": "1.1.0"}
 
 
 # Driver selection/ranking now lives in pkcs11_signer (rank_driver_candidates)

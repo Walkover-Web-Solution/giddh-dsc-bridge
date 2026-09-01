@@ -15,7 +15,7 @@ $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = (Resolve-Path (Join-Path $Here "..\..")).Path
 $DefaultVersion = if (Test-Path (Join-Path $Root "VERSION")) {
     (Get-Content (Join-Path $Root "VERSION") -Raw).Trim()
-} else { "1.7.0" }
+} else { "1.1.0" }
 $Version = if ($env:VERSION) { $env:VERSION } else { $DefaultVersion }
 
 # Resolve the Python interpreter that has PyInstaller. On the GitHub-hosted

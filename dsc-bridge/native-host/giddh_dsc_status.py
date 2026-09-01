@@ -342,11 +342,11 @@ class StatusApp:
         self.root = root
         self.root.title(APP_NAME)
         self.root.configure(bg=LIGHT_BG)
-        self.root.minsize(560, 520)
+        self.root.minsize(480, 280)
 
         # Center on screen.
         self.root.update_idletasks()
-        width, height = 620, 560
+        width, height = 560, 340
         x = (self.root.winfo_screenwidth() // 2) - (width // 2)
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f"{width}x{height}+{x}+{y}")
@@ -399,9 +399,8 @@ class StatusApp:
         # tree but macOS accessibility and screencapture only see the toplevel
         # window title. The reliable workaround is to use a single tk.Canvas
         # that paints every text/background manually — Canvas reaches the
-        # screen consistently on Aqua Tk 8.5. Buttons stay ttk because they
-        # render fine.
-        width, height = 620, 560
+        # screen consistently on Aqua Tk 8.5.
+        width, height = 560, 340
         self.canvas = tk.Canvas(self.root, width=width, height=height,
                                 bg=LIGHT_BG, highlightthickness=0, borderwidth=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
@@ -454,12 +453,7 @@ class StatusApp:
         # Title (large bold)
         c.create_text(w // 2, y, text=APP_NAME, fill=LIGHT_FG,
                       font=("Helvetica", 22, "bold"), anchor="n", tags="static")
-        y += 32
-
-        # Version (smaller gray)
-        c.create_text(w // 2, y, text=f"Version {VERSION}", fill=SECONDARY_FG,
-                      font=("Helvetica", 11), anchor="n", tags="static")
-        y += 20
+        y += 36
 
         # Description (wrap)
         c.create_text(w // 2, y, text=APP_DESCRIPTION, fill=SECONDARY_FG,
@@ -468,10 +462,10 @@ class StatusApp:
         # Approximate wrap height (lines * 18)
         wrap_chars = 420 // 6  # rough
         lines = max(1, len(APP_DESCRIPTION) // max(1, wrap_chars) + 1)
-        y += lines * 18 + 14 + 20
+        y += lines * 18 + 24
 
         # ── Footer text (drawn last, anchored to bottom) ───────────────────
-        footer_y = max(y + 200, self.root.winfo_height() - 36)
+        footer_y = max(y + 48, self.root.winfo_height() - 36)
         c.create_text(w // 2, footer_y,
                       text="The browser extension uses this bridge automatically. You can close this window.",
                       fill=SECONDARY_FG, font=("Helvetica", 11),

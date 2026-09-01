@@ -126,7 +126,7 @@ icons/                       all app icon assets in one folder (see §7)
 
 ## 5. Versioning
 
-`VERSION` (repo root, plain text, e.g. `1.7.0`) is the single source of truth.
+`VERSION` (repo root, plain text, e.g. `1.1.0`) is the single source of truth.
 
 - PyInstaller specs (`packaging/pyinstaller/*.spec`) read it directly for the
   macOS `.app` bundle version and Windows `version_info.txt`.
@@ -246,7 +246,7 @@ GitHub when ready and signing turns on with no further code changes.
 ./packaging/linux/build_deb.sh          # -> dist/giddh-dsc-bridge_<ver>_<arch>.deb
 
 # All three via CI:
-git tag v1.7.0 && git push origin v1.7.0   # or run build-packages.yml manually
+git tag v1.1.0 && git push origin v1.1.0   # or run build-packages.yml manually
 
 # Native host self-test (no browser needed):
 python3 dsc-bridge/native-host/selftest.py
