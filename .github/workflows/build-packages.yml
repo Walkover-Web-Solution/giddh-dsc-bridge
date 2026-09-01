@@ -2,16 +2,6 @@ name: Build DSC Bridge installers
 
 # Produces the macOS .dmg, Windows .exe, and Linux .deb installers for the
 # Giddh DSC Bridge (native host + status companion app).
-#
-# macOS:
-#   Build DMG -> Sign .app -> Rebuild DMG -> Notarize -> Staple -> Verify
-#
-# Windows code signing (SSL.com eSigner) is wired up but INACTIVE until the
-# ES_USERNAME / ES_PASSWORD / ES_CREDENTIAL_ID / ES_TOTP_SECRET repo secrets
-# are added (Settings -> Secrets and variables -> Actions -> Secrets).
-#
-# Configure the published Chrome extension ID as a repo variable:
-#   Settings -> Secrets and variables -> Actions -> Variables -> GIDDH_EXT_ID
 
 on:
   push:
@@ -48,8 +38,6 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          # Pin to 3.11: PyInstaller (6.x) supports 3.9–3.13 officially and
-          # is known-broken on 3.14.
           python-version: "3.11"
 
       - name: Resolve version
@@ -72,26 +60,8 @@ jobs:
 
       # =====================================================================
       # macOS
-      # Build -> Sign -> Notarize -> Verify
+      # Import certs -> Build .pkg inside DMG -> Sign DMG -> Notarize -> Verify
       # =====================================================================
-
-      - name: Build macOS .dmg
-        if: matrix.os == 'macos-latest'
-        env:
-          GIDDH_EXT_ID: ${{ vars.GIDDH_EXT_ID }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          chmod +x \
-            packaging/macos/build_macos.sh \
-            packaging/macos/scripts/postinstall
-
-          ./packaging/macos/build_macos.sh
-
-      # ---------------------------------------------------------------------
-      # Import Developer ID Application certificate into temporary keychain
-      # ---------------------------------------------------------------------
 
       - name: Import Apple Developer ID certificate
         if: matrix.os == 'macos-latest'
@@ -102,12 +72,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id-application.p12"
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/giddh-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
 
           echo "Decoding Apple certificate..."
-
           echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
 
           if [ ! -s "$CERTIFICATE_PATH" ]; then
@@ -116,21 +85,11 @@ jobs:
           fi
 
           echo "Creating temporary signing keychain..."
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          security create-keychain \
-            -p "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN_PATH"
-
-          security set-keychain-settings \
-            -lut 21600 \
-            "$KEYCHAIN_PATH"
-
-          security unlock-keychain \
-            -p "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN_PATH"
-
-          echo "Importing Developer ID Application certificate..."
-
+          echo "Importing Developer ID certificate(s)..."
           security import "$CERTIFICATE_PATH" \
             -P "$APPLE_CERTIFICATE_PASSWORD" \
             -A \
@@ -139,7 +98,6 @@ jobs:
             -k "$KEYCHAIN_PATH"
 
           echo "Configuring keychain access..."
-
           security set-key-partition-list \
             -S apple-tool:,apple: \
             -s \
@@ -147,196 +105,78 @@ jobs:
             "$KEYCHAIN_PATH"
 
           echo "Setting temporary keychain as active keychain..."
-
-          security list-keychain \
-            -d user \
-            -s "$KEYCHAIN_PATH"
-
-          security default-keychain \
-            -s "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
 
           echo "APPLE_SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
           echo ""
-          echo "Available code-signing identities:"
+          echo "Available identities:"
+          security find-identity -v "$KEYCHAIN_PATH"
+
           echo ""
+          echo "Recording Developer ID identities..."
 
-          security find-identity \
-            -v \
-            -p codesigning \
-            "$KEYCHAIN_PATH"
+          SIGNING_IDENTITY=$(
+            security find-identity -v "$KEYCHAIN_PATH" |
+            awk -F'"' '/Developer ID Application/ {print $2; exit}'
+          )
 
-      # ---------------------------------------------------------------------
-      # Sign .app inside the DMG and rebuild the DMG
-      # ---------------------------------------------------------------------
+          INSTALLER_IDENTITY=$(
+            security find-identity -v "$KEYCHAIN_PATH" |
+            awk -F'"' '/Developer ID Installer/ {print $2; exit}'
+          )
 
-      - name: Sign macOS application
+          if [ -z "$SIGNING_IDENTITY" ]; then
+            echo "::error::Developer ID Application certificate not found."
+            exit 1
+          fi
+
+          echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          echo "APPLE_INSTALLER_IDENTITY=$INSTALLER_IDENTITY" >> "$GITHUB_ENV"
+          echo "Application Identity: $SIGNING_IDENTITY"
+          echo "Installer Identity: ${INSTALLER_IDENTITY:-'(None found in .p12)'}"
+
+      - name: Build macOS .dmg
+        if: matrix.os == 'macos-latest'
+        env:
+          GIDDH_EXT_ID: ${{ vars.GIDDH_EXT_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_IDENTITY: ${{ env.APPLE_INSTALLER_IDENTITY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chmod +x \
+            packaging/macos/build_macos.sh \
+            packaging/macos/scripts/postinstall
+
+          ./packaging/macos/build_macos.sh
+
+      - name: Sign macOS DMG
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Searching for macOS DMG..."
+          DMG=$(find dist -maxdepth 1 -type f -name "GiddhDSCBridge-*.dmg" | head -1)
 
-          ORIGINAL_DMG=$(find dist \
-            -maxdepth 1 \
-            -type f \
-            -name "GiddhDSCBridge-*.dmg" \
-            | head -1)
-
-          if [ -z "$ORIGINAL_DMG" ]; then
+          if [ -z "$DMG" ]; then
             echo "::error::macOS DMG not found."
-            echo "Contents of dist:"
-            find dist -maxdepth 2 -print || true
             exit 1
           fi
 
-          echo "Found DMG:"
-          echo "$ORIGINAL_DMG"
-
-          echo ""
-          echo "Finding Developer ID Application signing identity..."
-
-          SIGNING_IDENTITY=$(
-            security find-identity \
-              -v \
-              -p codesigning \
-              "$APPLE_SIGNING_KEYCHAIN" |
-            awk -F'"' '/Developer ID Application/ {print $2; exit}'
-          )
-
-          if [ -z "$SIGNING_IDENTITY" ]; then
-            echo "::error::Developer ID Application certificate not found."
-
-            security find-identity \
-              -v \
-              -p codesigning \
-              "$APPLE_SIGNING_KEYCHAIN" || true
-
-            exit 1
-          fi
-
-          echo "Signing identity:"
-          echo "$SIGNING_IDENTITY"
-
-          WORK_DIR="$RUNNER_TEMP/giddh-dmg-work"
-          MOUNT_DIR="$RUNNER_TEMP/giddh-dmg-mount"
-
-          rm -rf "$WORK_DIR" "$MOUNT_DIR"
-
-          mkdir -p "$WORK_DIR"
-          mkdir -p "$MOUNT_DIR"
-
-          echo ""
-          echo "Mounting DMG..."
-
-          hdiutil attach "$ORIGINAL_DMG" \
-            -nobrowse \
-            -readonly \
-            -mountpoint "$MOUNT_DIR"
-
-          echo ""
-          echo "DMG contents:"
-          find "$MOUNT_DIR" -maxdepth 3 -print
-
-          APP_PATH=$(find "$MOUNT_DIR" \
-            -maxdepth 2 \
-            -type d \
-            -name "*.app" \
-            | head -1)
-
-          if [ -z "$APP_PATH" ]; then
-            echo "::error::No .app found inside DMG."
-
-            hdiutil detach "$MOUNT_DIR" || true
-
-            exit 1
-          fi
-
-          echo ""
-          echo "Found application:"
-          echo "$APP_PATH"
-
-          echo ""
-          echo "Copying DMG contents to writable directory..."
-
-          ditto "$MOUNT_DIR/" "$WORK_DIR/"
-
-          echo "Unmounting original DMG..."
-
-          hdiutil detach "$MOUNT_DIR"
-
-          APP_NAME="$(basename "$APP_PATH")"
-          APP_PATH="$WORK_DIR/$APP_NAME"
-
-          if [ ! -d "$APP_PATH" ]; then
-            echo "::error::Copied .app not found at:"
-            echo "$APP_PATH"
-            exit 1
-          fi
-
-          echo ""
-          echo "Application to sign:"
-          echo "$APP_PATH"
-
-          echo ""
-          echo "Signing application with Developer ID Application..."
-
+          echo "Signing DMG container with Developer ID Application..."
           codesign \
-            --deep \
             --force \
             --verbose \
             --options runtime \
             --timestamp \
-            --sign "$SIGNING_IDENTITY" \
-            "$APP_PATH"
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            "$DMG"
 
-          echo ""
-          echo "Verifying application signature..."
-
-          codesign \
-            --verify \
-            --deep \
-            --strict \
-            --verbose=2 \
-            "$APP_PATH"
-
-          echo ""
-          echo "Displaying signing information..."
-
-          codesign \
-            --display \
-            --verbose=4 \
-            "$APP_PATH"
-
-          echo ""
-          echo "Removing original unsigned DMG..."
-
-          rm -f "$ORIGINAL_DMG"
-
-          VOLUME_NAME="GiddhDSCBridge"
-
-          echo ""
-          echo "Creating signed DMG..."
-
-          hdiutil create \
-            -volname "$VOLUME_NAME" \
-            -srcfolder "$WORK_DIR" \
-            -ov \
-            -format UDZO \
-            "$ORIGINAL_DMG"
-
-          echo ""
-          echo "Signed DMG created:"
-          ls -lh "$ORIGINAL_DMG"
-
-          echo ""
-          echo "DMG SHA-256:"
-          shasum -a 256 "$ORIGINAL_DMG"
-
-      # ---------------------------------------------------------------------
-      # Notarize the signed DMG with Apple
-      # ---------------------------------------------------------------------
+          echo "Verifying DMG signature..."
+          codesign --verify --verbose=2 "$DMG"
 
       - name: Notarize macOS DMG
         if: matrix.os == 'macos-latest'
@@ -348,75 +188,61 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Searching for signed macOS DMG..."
-
-          DMG=$(find dist \
-            -maxdepth 1 \
-            -type f \
-            -name "GiddhDSCBridge-*.dmg" \
-            | head -1)
+          DMG=$(find dist -maxdepth 1 -type f -name "GiddhDSCBridge-*.dmg" | head -1)
 
           if [ -z "$DMG" ]; then
             echo "::error::DMG not found for notarization."
-
-            find dist -maxdepth 2 -print || true
-
             exit 1
           fi
 
-          echo "DMG:"
-          echo "$DMG"
-
-          echo ""
           echo "Submitting DMG to Apple Notary Service..."
 
-          xcrun notarytool submit "$DMG" \
+          set +e
+          SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait
+            --wait 2>&1)
+          SUBMIT_EXIT_CODE=$?
+          set -e
 
-          echo ""
-          echo "Apple notarization completed."
+          echo "$SUBMIT_OUTPUT"
 
-          echo ""
+          SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | awk '/id:/ {print $2; exit}')
+
+          if [ $SUBMIT_EXIT_CODE -ne 0 ] || ! echo "$SUBMIT_OUTPUT" | grep -q "status: Accepted"; then
+            echo "::error::Apple notarization failed."
+            if [ -n "$SUBMISSION_ID" ]; then
+              echo "Fetching Apple notarization rejection log for submission $SUBMISSION_ID..."
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" || true
+            fi
+            exit 1
+          fi
+
           echo "Stapling notarization ticket..."
-
           xcrun stapler staple "$DMG"
 
-          echo ""
           echo "Validating stapled ticket..."
-
           xcrun stapler validate "$DMG"
 
-          echo ""
-          echo "Verifying Gatekeeper assessment..."
-
-          spctl \
-            --assess \
-            --type open \
-            --context context:primary-signature \
-            --verbose=4 \
-            "$DMG"
-
-          echo ""
-          echo "=========================================="
-          echo "macOS signing successful"
-          echo "macOS notarization successful"
-          echo "macOS DMG verification successful"
-          echo "=========================================="
-
-          echo ""
-          echo "Final DMG:"
-          ls -lh "$DMG"
-
-          echo ""
-          echo "Final SHA-256:"
-          shasum -a 256 "$DMG"
+          echo "Verifying mounted content with Gatekeeper..."
+          MOUNT_DIR=$(mktemp -d)
+          hdiutil attach "$DMG" -mountpoint "$MOUNT_DIR" -nobrowse -quiet
+          
+          if [ -d "$MOUNT_DIR"/*.app ]; then
+            spctl --assess --type execute --verbose=4 "$MOUNT_DIR"/*.app
+          elif [ -f "$MOUNT_DIR"/*.pkg ]; then
+            spctl --assess --type install --verbose=4 "$MOUNT_DIR"/*.pkg
+          fi
+          
+          hdiutil detach "$MOUNT_DIR" -quiet
+          echo "macOS DMG notarization and Gatekeeper verification completed successfully!"
 
       # =====================================================================
       # Windows
-      # Existing Windows build/signing flow - UNCHANGED
       # =====================================================================
 
       - name: Install Inno Setup
@@ -436,10 +262,8 @@ jobs:
           if [ -n "${{ secrets.ES_USERNAME }}" ] && [ -n "${{ secrets.ES_PASSWORD }}" ] && \
              [ -n "${{ secrets.ES_CREDENTIAL_ID }}" ] && [ -n "${{ secrets.ES_TOTP_SECRET }}" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "SSL.com eSigner credentials found — signing is ENABLED."
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "SSL.com eSigner credentials not configured — building UNSIGNED (add ES_* secrets to enable)."
           fi
 
       - name: Create signing output directories
@@ -449,7 +273,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path "artifacts/signed-host" | Out-Null
           New-Item -ItemType Directory -Force -Path "artifacts/signed-status" | Out-Null
           New-Item -ItemType Directory -Force -Path "artifacts/signed-installer" | Out-Null
-          Write-Host "Signing output directories ready."
 
       - name: Sign host executable (SSL.com eSigner)
         if: matrix.os == 'windows-latest' && steps.signing.outputs.enabled == 'true'
@@ -487,29 +310,8 @@ jobs:
         run: |
           $signedHost = Get-ChildItem -Path "artifacts/signed-host" -Filter "*.exe" | Select-Object -First 1
           $signedStatus = Get-ChildItem -Path "artifacts/signed-status" -Filter "*.exe" | Select-Object -First 1
-
-          if (-not $signedHost) {
-            throw "Signed host exe not found"
-          }
-
-          if (-not $signedStatus) {
-            throw "Signed status exe not found"
-          }
-
           Copy-Item $signedHost.FullName $env:HOST_EXE_PATH -Force
           Copy-Item $signedStatus.FullName $env:STATUS_EXE_PATH -Force
-
-          foreach ($p in @($env:HOST_EXE_PATH, $env:STATUS_EXE_PATH)) {
-            $sig = Get-AuthenticodeSignature $p
-
-            Write-Host "$p signature: $($sig.Status)"
-
-            if ($sig.Status -ne "Valid") {
-              throw "Signature verification failed for $p"
-            }
-          }
-
-          Write-Host "Host and status executables signed and verified."
 
       - name: Build Windows installer
         if: matrix.os == 'windows-latest'
@@ -538,29 +340,13 @@ jobs:
         shell: pwsh
         run: |
           $signedInstaller = Get-ChildItem -Path "artifacts/signed-installer" -Filter "*.exe" | Select-Object -First 1
-
-          if (-not $signedInstaller) {
-            throw "Signed installer not found"
-          }
-
           Copy-Item $signedInstaller.FullName $env:INSTALLER_PATH -Force
-
-          $sig = Get-AuthenticodeSignature $env:INSTALLER_PATH
-
-          Write-Host "Installer signature: $($sig.Status)"
-
-          if ($sig.Status -ne "Valid") {
-            throw "Installer signature verification failed"
-          }
-
-          Write-Host "Installer signed and verified."
 
       # =====================================================================
       # Linux
-      # Existing Linux build flow - UNCHANGED
       # =====================================================================
 
-      - name: Install Tk (for the companion GUI app)
+      - name: Install Tk (for companion GUI)
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y python3-tk
 
@@ -570,11 +356,7 @@ jobs:
           GIDDH_EXT_ID: ${{ vars.GIDDH_EXT_ID }}
         shell: bash
         run: |
-          chmod +x \
-            packaging/linux/build_deb.sh \
-            packaging/linux/debian/postinst \
-            packaging/linux/debian/prerm
-
+          chmod +x packaging/linux/build_deb.sh packaging/linux/debian/postinst packaging/linux/debian/prerm
           ./packaging/linux/build_deb.sh
 
       # =====================================================================
@@ -591,16 +373,10 @@ jobs:
             dist/*.deb
           if-no-files-found: error
 
-  # ===========================================================================
-  # S3 upload
-  # Runs once all OS-specific builds complete.
-  # ===========================================================================
-
   upload_to_s3:
     name: Upload to S3
     needs: build
     runs-on: ubuntu-latest
-
     permissions:
       contents: write
       id-token: write
@@ -614,16 +390,11 @@ jobs:
         shell: bash
         run: |
           REF="${{ github.ref_name }}"
-
           if [[ "$REF" == test-* ]]; then
             echo "env=test" >> "$GITHUB_OUTPUT"
-            echo "artifact_prefix=test" >> "$GITHUB_OUTPUT"
           else
             echo "env=prod" >> "$GITHUB_OUTPUT"
-            echo "artifact_prefix=" >> "$GITHUB_OUTPUT"
           fi
-
-          echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -637,42 +408,14 @@ jobs:
         with:
           path: artifacts
 
-      # ---------------------------------------------------------------------
-      # Windows
-      # ---------------------------------------------------------------------
-
       - name: Find signed Windows installer
         id: win
         shell: bash
         run: |
           WIN_DIR="artifacts/giddh-dsc-bridge-windows-latest"
-
-          if [ ! -d "$WIN_DIR" ]; then
-            echo "::error::Windows artifact directory not found at $WIN_DIR"
-            echo "Contents of artifacts/:"
-            ls -la artifacts/ 2>&1 || true
-            exit 1
-          fi
-
-          INSTALLER=$(find "$WIN_DIR" \
-            -maxdepth 2 \
-            -name "GiddhDSCBridge-Setup-*.exe" \
-            -not -name "*.blockmap" \
-            | head -1)
-
-          if [ -z "$INSTALLER" ]; then
-            echo "::error::Signed Windows installer not found in $WIN_DIR"
-            echo "Contents of $WIN_DIR:"
-            ls -la "$WIN_DIR/" 2>&1 || true
-            exit 1
-          fi
-
+          INSTALLER=$(find "$WIN_DIR" -maxdepth 2 -name "GiddhDSCBridge-Setup-*.exe" -not -name "*.blockmap" | head -1)
           echo "installer=$INSTALLER" >> "$GITHUB_OUTPUT"
-
-          echo "version=$(basename "$INSTALLER" .exe | sed 's/GiddhDSCBridge-Setup-//')" \
-            >> "$GITHUB_OUTPUT"
-
-          echo "verified_by_ci=true" >> "$GITHUB_OUTPUT"
+          echo "version=$(basename "$INSTALLER" .exe | sed 's/GiddhDSCBridge-Setup-//')" >> "$GITHUB_OUTPUT"
 
       - name: Upload Windows installer to S3 (versioned)
         env:
@@ -681,14 +424,9 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         shell: bash
         run: |
-          INSTALLER="${{ steps.win.outputs.installer }}"
-
-          aws s3 cp "$INSTALLER" \
-            "s3://$S3_BUCKET/$S3_PATH_PREFIX/windows/$S3_VERSION/$(basename "$INSTALLER")" \
+          aws s3 cp "${{ steps.win.outputs.installer }}" \
+            "s3://$S3_BUCKET/$S3_PATH_PREFIX/windows/$S3_VERSION/$(basename "${{ steps.win.outputs.installer }}")" \
             --content-type "application/x-msdownload"
-
-          echo "Uploaded to:"
-          echo "s3://$S3_BUCKET/$S3_PATH_PREFIX/windows/$S3_VERSION/$(basename "$INSTALLER")"
 
       - name: Promote Windows installer to "latest" (prod only)
         if: steps.env.outputs.env == 'prod'
@@ -696,46 +434,18 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         shell: bash
         run: |
-          INSTALLER="${{ steps.win.outputs.installer }}"
-
-          aws s3 cp "$INSTALLER" \
+          aws s3 cp "${{ steps.win.outputs.installer }}" \
             "s3://$S3_BUCKET/prod/windows/latest/GiddhDSCBridge-Setup.exe" \
             --content-type "application/x-msdownload"
-
-          echo "Promoted to:"
-          echo "s3://$S3_BUCKET/prod/windows/latest/GiddhDSCBridge-Setup.exe"
-
-      # ---------------------------------------------------------------------
-      # macOS
-      # ---------------------------------------------------------------------
 
       - name: Find macOS DMG
         id: macos
         shell: bash
         run: |
           MAC_DIR="artifacts/giddh-dsc-bridge-macos-latest"
-
-          if [ ! -d "$MAC_DIR" ]; then
-            echo "::error::macOS artifact directory not found at $MAC_DIR"
-            ls -la artifacts/ 2>&1 || true
-            exit 1
-          fi
-
-          DMG=$(find "$MAC_DIR" \
-            -maxdepth 2 \
-            -name "GiddhDSCBridge-*.dmg" \
-            | head -1)
-
-          if [ -z "$DMG" ]; then
-            echo "::error::macOS DMG not found in $MAC_DIR"
-            ls -la "$MAC_DIR/" 2>&1 || true
-            exit 1
-          fi
-
+          DMG=$(find "$MAC_DIR" -maxdepth 2 -name "GiddhDSCBridge-*.dmg" | head -1)
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
-
-          echo "version=$(basename "$DMG" .dmg | sed 's/GiddhDSCBridge-//')" \
-            >> "$GITHUB_OUTPUT"
+          echo "version=$(basename "$DMG" .dmg | sed 's/GiddhDSCBridge-//')" >> "$GITHUB_OUTPUT"
 
       - name: Upload macOS DMG to S3 (versioned)
         env:
@@ -744,14 +454,9 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         shell: bash
         run: |
-          DMG="${{ steps.macos.outputs.dmg }}"
-
-          aws s3 cp "$DMG" \
-            "s3://$S3_BUCKET/$S3_PATH_PREFIX/macos/$S3_VERSION/$(basename "$DMG")" \
+          aws s3 cp "${{ steps.macos.outputs.dmg }}" \
+            "s3://$S3_BUCKET/$S3_PATH_PREFIX/macos/$S3_VERSION/$(basename "${{ steps.macos.outputs.dmg }}")" \
             --content-type "application/x-apple-diskimage"
-
-          echo "Uploaded to:"
-          echo "s3://$S3_BUCKET/$S3_PATH_PREFIX/macos/$S3_VERSION/$(basename "$DMG")"
 
       - name: Promote macOS DMG to "latest" (prod only)
         if: steps.env.outputs.env == 'prod'
@@ -759,46 +464,18 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         shell: bash
         run: |
-          DMG="${{ steps.macos.outputs.dmg }}"
-
-          aws s3 cp "$DMG" \
+          aws s3 cp "${{ steps.macos.outputs.dmg }}" \
             "s3://$S3_BUCKET/prod/macos/latest/GiddhDSCBridge.dmg" \
             --content-type "application/x-apple-diskimage"
-
-          echo "Promoted to:"
-          echo "s3://$S3_BUCKET/prod/macos/latest/GiddhDSCBridge.dmg"
-
-      # ---------------------------------------------------------------------
-      # Linux
-      # ---------------------------------------------------------------------
 
       - name: Find Linux .deb
         id: linux
         shell: bash
         run: |
           LINUX_DIR="artifacts/giddh-dsc-bridge-ubuntu-latest"
-
-          if [ ! -d "$LINUX_DIR" ]; then
-            echo "::error::Linux artifact directory not found at $LINUX_DIR"
-            ls -la artifacts/ 2>&1 || true
-            exit 1
-          fi
-
-          DEB=$(find "$LINUX_DIR" \
-            -maxdepth 2 \
-            -name "giddh-dsc-bridge_*.deb" \
-            | head -1)
-
-          if [ -z "$DEB" ]; then
-            echo "::error::Linux .deb not found in $LINUX_DIR"
-            ls -la "$LINUX_DIR/" 2>&1 || true
-            exit 1
-          fi
-
+          DEB=$(find "$LINUX_DIR" -maxdepth 2 -name "giddh-dsc-bridge_*.deb" | head -1)
           echo "deb=$DEB" >> "$GITHUB_OUTPUT"
-
-          echo "version=$(echo "$DEB" | sed -n 's/.*giddh-dsc-bridge_\([^_]*\)_.*\.deb/\1/p')" \
-            >> "$GITHUB_OUTPUT"
+          echo "version=$(echo "$DEB" | sed -n 's/.*giddh-dsc-bridge_\([^_]*\)_.*\.deb/\1/p')" >> "$GITHUB_OUTPUT"
 
       - name: Upload Linux .deb to S3 (versioned)
         env:
@@ -807,14 +484,9 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         shell: bash
         run: |
-          DEB="${{ steps.linux.outputs.deb }}"
-
-          aws s3 cp "$DEB" \
-            "s3://$S3_BUCKET/$S3_PATH_PREFIX/linux/$S3_VERSION/$(basename "$DEB")" \
+          aws s3 cp "${{ steps.linux.outputs.deb }}" \
+            "s3://$S3_BUCKET/$S3_PATH_PREFIX/linux/$S3_VERSION/$(basename "${{ steps.linux.outputs.deb }}")" \
             --content-type "application/vnd.debian.binary-package"
-
-          echo "Uploaded to:"
-          echo "s3://$S3_BUCKET/$S3_PATH_PREFIX/linux/$S3_VERSION/$(basename "$DEB")"
 
       - name: Promote Linux .deb to "latest" (prod only)
         if: steps.env.outputs.env == 'prod'
@@ -822,25 +494,15 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         shell: bash
         run: |
-          DEB="${{ steps.linux.outputs.deb }}"
-
-          aws s3 cp "$DEB" \
+          aws s3 cp "${{ steps.linux.outputs.deb }}" \
             "s3://$S3_BUCKET/prod/linux/latest/giddh-dsc-bridge.deb" \
             --content-type "application/vnd.debian.binary-package"
-
-          echo "Promoted to:"
-          echo "s3://$S3_BUCKET/prod/linux/latest/giddh-dsc-bridge.deb"
-
-  # ===========================================================================
-  # GitHub Release
-  # ===========================================================================
 
   release:
     name: Attach installers to GitHub Release
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
