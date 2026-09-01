@@ -4,8 +4,7 @@ Giddh DSC Bridge — status / companion application.
 
 This is the small desktop window users see after installing the bridge. It is
 not required for signing (the browser extension talks directly to the native
-host), but it lets users check that a DSC token is detected and uninstall
-cleanly. PKCS#11 module management (listing, attaching, picking a token) is
+host). PKCS#11 module management (listing, attaching, picking a token) is
 handled in the extension's test page / Giddh's own UI via listModules() and
 getCertificate(), not here.
 
@@ -22,13 +21,10 @@ theme styles them correctly).
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import platform
-import subprocess
 import sys
-import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -236,119 +232,6 @@ def _apply_palette(root: tk.Tk) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Native-host status helpers
-# -----------------------------------------------------------------------------
-
-HOST_NAME = "com.giddh.dsc.bridge"
-HOST_EXE = "giddh-dsc-host"
-if is_windows():
-    HOST_EXE += ".exe"
-
-
-def _find_host_executable() -> Path | None:
-    """Locate the native host binary next to this app.
-
-    The host and the status app are packaged as separate components that
-    don't always share an install root:
-      - macOS: host -> /usr/local/giddh-dsc-bridge/giddh-dsc-host,
-               status app -> /Applications/Giddh DSC Bridge.app (unrelated
-               location, so the host path must be hardcoded).
-      - Linux (.deb): both live under /opt/giddh-dsc-bridge, with the
-               status app one level down in a "status" subfolder, so
-               root.parent finds the host.
-      - Windows (Inno Setup): both live under {app}, with the status app
-               one level down in a "status" subfolder — same as Linux —
-               but the default install dir is {localappdata}, not
-               Program Files, so that must be checked too.
-    """
-    root = get_app_root()
-    candidates = [
-        root / HOST_EXE,
-        root / "native-host" / HOST_EXE,
-        root.parent / HOST_EXE,
-        Path(f"/usr/local/bin/{HOST_EXE}"),
-        Path.home() / ".giddh-dsc-bridge" / HOST_EXE,
-    ]
-    if is_mac():
-        candidates.append(Path("/usr/local/giddh-dsc-bridge") / HOST_EXE)
-    elif not is_windows():
-        candidates.append(Path("/opt/giddh-dsc-bridge") / HOST_EXE)
-    if is_windows():
-        candidates.insert(0, root / f"{HOST_EXE}")
-        program_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
-        candidates.append(Path(program_files) / "Giddh DSC Bridge" / HOST_EXE)
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
-            candidates.append(Path(local_appdata) / "Giddh DSC Bridge" / HOST_EXE)
-    for c in candidates:
-        if c.exists():
-            return c
-    return None
-
-
-def _registry_key_for_host() -> str:
-    return r"SOFTWARE\Google\Chrome\NativeMessagingHosts\com.giddh.dsc.bridge"
-
-
-def is_host_registered() -> bool:
-    if is_windows():
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _registry_key_for_host()) as key:
-                value, _ = winreg.QueryValueEx(key, None)
-                return bool(value)
-        except FileNotFoundError:
-            return False
-        except Exception:
-            return False
-    elif is_mac():
-        paths = [
-            Path.home() / "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.giddh.dsc.bridge.json",
-            Path.home() / "Library/Application Support/Chromium/NativeMessagingHosts/com.giddh.dsc.bridge.json",
-            Path.home() / "Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.giddh.dsc.bridge.json",
-            Path("/Library/Google/Chrome/NativeMessagingHosts/com.giddh.dsc.bridge.json"),
-            Path("/Library/Application Support/Chromium/NativeMessagingHosts/com.giddh.dsc.bridge.json"),
-            Path("/Library/Microsoft/Edge/NativeMessagingHosts/com.giddh.dsc.bridge.json"),
-        ]
-        return any(p.exists() for p in paths)
-    else:
-        paths = [
-            Path.home() / ".config/google-chrome/NativeMessagingHosts/com.giddh.dsc.bridge.json",
-            Path.home() / ".config/chromium/NativeMessagingHosts/com.giddh.dsc.bridge.json",
-        ]
-        return any(p.exists() for p in paths)
-
-
-def is_host_installed() -> bool:
-    """True if the native host executable is present on disk."""
-    return _find_host_executable() is not None
-
-
-def run_host_diagnose() -> dict:
-    """Run a quick diagnostic via the native host."""
-    host = _find_host_executable()
-    if not host:
-        return {"installed": False, "error": "Native host executable not found"}
-    try:
-        proc = subprocess.run(
-            [str(host), "--diagnose"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if proc.returncode == 0 and proc.stdout:
-            try:
-                return json.loads(proc.stdout)
-            except json.JSONDecodeError:
-                return {"installed": True, "raw_output": proc.stdout.strip()}
-        return {"installed": True, "error": proc.stderr.strip() or "diagnose failed"}
-    except subprocess.TimeoutExpired:
-        return {"installed": True, "error": "diagnose timed out"}
-    except Exception as e:
-        return {"installed": True, "error": str(e)}
-
-
-# -----------------------------------------------------------------------------
 # Main application window
 # -----------------------------------------------------------------------------
 
@@ -432,22 +315,10 @@ class StatusApp:
         self._render_canvas()
 
     def _render_canvas(self) -> None:
-        """Draw the entire UI onto a single canvas.
-
-        Only items tagged "static" are cleared and redrawn here. The
-        embedded widgets (button row, advanced checkbutton, advanced
-        frame) are created once and only repositioned afterwards — a
-        plain `delete("all")` would remove the `create_window` items that
-        host them, and since they are only ever (re)created behind
-        `hasattr` guards, they would disappear permanently after the very
-        first <Configure> event (which macOS fires automatically while the
-        window is being laid out at startup).
-        """
+        """Draw the entire UI onto a single canvas."""
         c = self.canvas
         c.delete("static")
         w = self._canvas_width
-        # Layout constants
-        pad = 24
         y = 16
 
         # DEBUG: dump canvas state to file so we can verify rendering.
@@ -497,36 +368,6 @@ class StatusApp:
         lines = max(1, len(APP_DESCRIPTION) // max(1, wrap_chars) + 1)
         y += lines * 18 + 14 + 20
 
-        # NOTE: an always-on "Native host / Browser registered / DSC token"
-        # status card used to render here. It relied on locating the native
-        # host executable on disk (_find_host_executable), which is only
-        # reliable right after a fresh install — a user simply reopening
-        # this app later (leftover .app from an older/partial install,
-        # host moved, etc.) would see a permanently red "not installed"
-        # error box even when everything actually works, with no easy way
-        # to tell a real problem from a stale one. Removed in favor of the
-        # on-demand "Check token" button below, which reports the live
-        # result the moment it's clicked instead of a static guess at
-        # startup.
-
-        # ── Buttons (ttk.Button — these render fine on Aqua Tk 8.5) ────────
-        # We want them at the same vertical position as `y`. Use a tk.Frame
-        # overlay to host the buttons at known coordinates.
-        if not hasattr(self, "_button_frame"):
-            self._button_frame = tk.Frame(self.canvas, bg=LIGHT_BG)
-            self._button_window = c.create_window(pad, y, window=self._button_frame,
-                                                  anchor="nw")
-            ttk.Button(self._button_frame, text="Check token",
-                       command=self._on_check_token,
-                       style="Primary.TButton").pack(side=tk.LEFT, padx=(0, 8))
-            ttk.Button(self._button_frame, text="Uninstall…",
-                       command=self._on_uninstall).pack(side=tk.LEFT, padx=(0, 8))
-            ttk.Button(self._button_frame, text="Quit",
-                       command=self.root.quit).pack(side=tk.LEFT)
-        else:
-            c.coords(self._button_window, pad, y)
-        y += 50
-
         # ── Footer text (drawn last, anchored to bottom) ───────────────────
         footer_y = max(y + 200, self.root.winfo_height() - 36)
         c.create_text(w // 2, footer_y,
@@ -543,49 +384,6 @@ class StatusApp:
             f"About {APP_NAME}",
             f"{APP_NAME}\nVersion {VERSION}\n\n{APP_DESCRIPTION}",
         )
-
-    def _on_check_token(self) -> None:
-        self.root.config(cursor="wait")
-        self.canvas.update_idletasks()
-
-        def run() -> None:
-            result = run_host_diagnose()
-            # A successful CLI run returns the host's own diagnose() reply —
-            # {"success": true, "diagnostics": {...}} — which has no
-            # top-level "token_present"/"certificates" keys; those never
-            # existed, so reading them always reported "not detected" even
-            # with a token plugged in. Token presence has to be derived from
-            # diagnostics.tokens / pcsc_readers instead.
-            error = result.get("error")
-            diagnostics = result.get("diagnostics") or {}
-            tokens = [t for t in (diagnostics.get("tokens") or []) if t]
-            card_present = any(r.get("card_present") for r in (diagnostics.get("pcsc_readers") or []))
-            token_ok = bool(tokens) or card_present
-            self.root.after(0, lambda: self._update_token_status(token_ok, tokens, error))
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _update_token_status(self, token_ok: bool, tokens: list[str], error: str | None) -> None:
-        self.root.config(cursor="")
-        if error:
-            messagebox.showerror("Check token", f"Could not check the token:\n\n{error}")
-        elif token_ok:
-            label = f"\n\nDetected: {tokens[0]}" if tokens else ""
-            messagebox.showinfo("Check token", f"DSC token detected.{label}")
-        else:
-            messagebox.showwarning(
-                "Check token",
-                "No DSC token detected. Plug in the token and click Check token again.",
-            )
-
-    def _on_uninstall(self) -> None:
-        if not messagebox.askyesno("Uninstall", f"Remove {APP_NAME} from this computer?", icon="warning"):
-            return
-        # TODO: implement platform-specific uninstall script invocation
-        messagebox.showinfo(
-            "Uninstall",
-            "Uninstall script is not bundled in this build.\n"
-            "Please delete the app and native-host manifest manually.")
 
 
 def main() -> int:
