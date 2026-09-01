@@ -82,6 +82,17 @@ if ! "$PKGROOT$INSTALL_DIR/giddh-dsc-host" --diagnose >"$SMOKE_LOG" 2>&1; then
 fi
 echo "    OK: $(cat "$SMOKE_LOG" | head -c 200)"
 
+if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  echo "==> Signing staged native host binary"
+  codesign \
+    --force \
+    --verbose \
+    --options runtime \
+    --timestamp \
+    --sign "$APPLE_SIGNING_IDENTITY" \
+    "$PKGROOT$INSTALL_DIR/giddh-dsc-host"
+fi
+
 # Bake the version into the app so the GUI can display it, then build the
 # visible status/companion app (.app) and stage it under /Applications.
 BUILDINFO="$ROOT/dsc-bridge/native-host/_buildinfo.py"
@@ -106,6 +117,26 @@ if [ -z "$APP_PY_SHLIB" ] || [ ! -e "$APP_PY_SHLIB" ]; then
   echo "       Contents/Frameworks:"
   ls -la "$APP_OUT/Contents/Frameworks" 2>&1 | head -10 || true
   exit 1
+fi
+
+if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  echo "==> Signing status app (Giddh DSC Bridge.app)"
+  codesign \
+    --deep \
+    --force \
+    --verbose \
+    --options runtime \
+    --timestamp \
+    --sign "$APPLE_SIGNING_IDENTITY" \
+    "$APP_OUT"
+
+  echo "==> Verifying status app signature"
+  codesign \
+    --verify \
+    --deep \
+    --strict \
+    --verbose=2 \
+    "$APP_OUT"
 fi
 
 mkdir -p "$PKGROOT/Applications"

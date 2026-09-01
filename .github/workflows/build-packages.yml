@@ -4,7 +4,7 @@ name: Build DSC Bridge installers
 # Giddh DSC Bridge (native host + status companion app).
 #
 # macOS:
-#   Build DMG -> Sign .app -> Rebuild DMG -> Notarize -> Staple -> Verify
+#   Import cert -> Build .pkg inside DMG (signed .app) -> Sign DMG -> Notarize -> Staple -> Verify
 #
 # Windows code signing (SSL.com eSigner) is wired up but INACTIVE until the
 # ES_USERNAME / ES_PASSWORD / ES_CREDENTIAL_ID / ES_TOTP_SECRET repo secrets
@@ -73,22 +73,8 @@ jobs:
 
       # =====================================================================
       # macOS
-      # Build -> Sign -> Notarize -> Verify
+      # Import cert -> Build .pkg inside DMG (signed .app) -> Sign DMG -> Notarize -> Verify
       # =====================================================================
-
-      - name: Build macOS .dmg
-        if: matrix.os == 'macos-latest'
-        env:
-          GIDDH_EXT_ID: ${{ vars.GIDDH_EXT_ID }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          chmod +x \
-            packaging/macos/build_macos.sh \
-            packaging/macos/scripts/postinstall
-
-          ./packaging/macos/build_macos.sh
 
       # ---------------------------------------------------------------------
       # Import Developer ID Application certificate into temporary keychain
@@ -167,42 +153,14 @@ jobs:
             -p codesigning \
             "$KEYCHAIN_PATH"
 
-      # ---------------------------------------------------------------------
-      # Sign .app inside the DMG and rebuild the DMG
-      # ---------------------------------------------------------------------
-
-      - name: Sign macOS application
-        if: matrix.os == 'macos-latest'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Searching for macOS DMG..."
-
-          ORIGINAL_DMG=$(find dist \
-            -maxdepth 1 \
-            -type f \
-            -name "GiddhDSCBridge-*.dmg" \
-            | head -1)
-
-          if [ -z "$ORIGINAL_DMG" ]; then
-            echo "::error::macOS DMG not found."
-            echo "Contents of dist:"
-            find dist -maxdepth 2 -print || true
-            exit 1
-          fi
-
-          echo "Found DMG:"
-          echo "$ORIGINAL_DMG"
-
           echo ""
-          echo "Finding Developer ID Application signing identity..."
+          echo "Recording Developer ID Application signing identity..."
 
           SIGNING_IDENTITY=$(
             security find-identity \
               -v \
               -p codesigning \
-              "$APPLE_SIGNING_KEYCHAIN" |
+              "$KEYCHAIN_PATH" |
             awk -F'"' '/Developer ID Application/ {print $2; exit}'
           )
 
@@ -212,128 +170,91 @@ jobs:
             security find-identity \
               -v \
               -p codesigning \
-              "$APPLE_SIGNING_KEYCHAIN" || true
+              "$KEYCHAIN_PATH" || true
 
             exit 1
           fi
 
-          echo "Signing identity:"
-          echo "$SIGNING_IDENTITY"
+          echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          echo "Signing identity: $SIGNING_IDENTITY"
 
-          WORK_DIR="$RUNNER_TEMP/giddh-dmg-work"
-          MOUNT_DIR="$RUNNER_TEMP/giddh-dmg-mount"
+      - name: Build macOS .dmg
+        if: matrix.os == 'macos-latest'
+        env:
+          GIDDH_EXT_ID: ${{ vars.GIDDH_EXT_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          rm -rf "$WORK_DIR" "$MOUNT_DIR"
+          chmod +x \
+            packaging/macos/build_macos.sh \
+            packaging/macos/scripts/postinstall
 
-          mkdir -p "$WORK_DIR"
-          mkdir -p "$MOUNT_DIR"
+          ./packaging/macos/build_macos.sh
 
-          echo ""
-          echo "Mounting DMG..."
+      # ---------------------------------------------------------------------
+      # Sign the DMG container directly (it holds a .pkg, not a .app)
+      # ---------------------------------------------------------------------
 
-          hdiutil attach "$ORIGINAL_DMG" \
-            -nobrowse \
-            -readonly \
-            -mountpoint "$MOUNT_DIR"
+      - name: Sign macOS DMG
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          echo ""
-          echo "DMG contents:"
-          find "$MOUNT_DIR" -maxdepth 3 -print
+          echo "Searching for macOS DMG..."
 
-          APP_PATH=$(find "$MOUNT_DIR" \
-            -maxdepth 2 \
-            -type d \
-            -name "*.app" \
+          DMG=$(find dist \
+            -maxdepth 1 \
+            -type f \
+            -name "GiddhDSCBridge-*.dmg" \
             | head -1)
 
-          if [ -z "$APP_PATH" ]; then
-            echo "::error::No .app found inside DMG."
-
-            hdiutil detach "$MOUNT_DIR" || true
-
+          if [ -z "$DMG" ]; then
+            echo "::error::macOS DMG not found."
+            echo "Contents of dist:"
+            find dist -maxdepth 2 -print || true
             exit 1
           fi
 
-          echo ""
-          echo "Found application:"
-          echo "$APP_PATH"
+          echo "Found DMG:"
+          echo "$DMG"
 
           echo ""
-          echo "Copying DMG contents to writable directory..."
-
-          ditto "$MOUNT_DIR/" "$WORK_DIR/"
-
-          echo "Unmounting original DMG..."
-
-          hdiutil detach "$MOUNT_DIR"
-
-          APP_NAME="$(basename "$APP_PATH")"
-          APP_PATH="$WORK_DIR/$APP_NAME"
-
-          if [ ! -d "$APP_PATH" ]; then
-            echo "::error::Copied .app not found at:"
-            echo "$APP_PATH"
-            exit 1
-          fi
-
-          echo ""
-          echo "Application to sign:"
-          echo "$APP_PATH"
-
-          echo ""
-          echo "Signing application with Developer ID Application..."
+          echo "Signing DMG container with Developer ID Application..."
 
           codesign \
-            --deep \
             --force \
             --verbose \
             --options runtime \
             --timestamp \
-            --sign "$SIGNING_IDENTITY" \
-            "$APP_PATH"
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            "$DMG"
 
           echo ""
-          echo "Verifying application signature..."
+          echo "Verifying DMG signature..."
 
           codesign \
             --verify \
-            --deep \
-            --strict \
             --verbose=2 \
-            "$APP_PATH"
+            "$DMG"
 
           echo ""
-          echo "Displaying signing information..."
+          echo "Displaying DMG signing information..."
 
           codesign \
             --display \
             --verbose=4 \
-            "$APP_PATH"
+            "$DMG"
 
           echo ""
-          echo "Removing original unsigned DMG..."
-
-          rm -f "$ORIGINAL_DMG"
-
-          VOLUME_NAME="GiddhDSCBridge"
-
-          echo ""
-          echo "Creating signed DMG..."
-
-          hdiutil create \
-            -volname "$VOLUME_NAME" \
-            -srcfolder "$WORK_DIR" \
-            -ov \
-            -format UDZO \
-            "$ORIGINAL_DMG"
-
-          echo ""
-          echo "Signed DMG created:"
-          ls -lh "$ORIGINAL_DMG"
+          echo "Signed DMG:"
+          ls -lh "$DMG"
 
           echo ""
           echo "DMG SHA-256:"
-          shasum -a 256 "$ORIGINAL_DMG"
+          shasum -a 256 "$DMG"
 
       # ---------------------------------------------------------------------
       # Notarize the signed DMG with Apple
