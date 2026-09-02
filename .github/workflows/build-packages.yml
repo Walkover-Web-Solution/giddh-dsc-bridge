@@ -168,7 +168,7 @@ jobs:
           fi
 
           if [ -z "$INSTALLER_IDENTITY" ]; then
-            echo "::warning::No Developer ID Installer certificate in the keychain — a .pkg cannot be signed, so the DMG will ship the signed .app instead. Add APPLE_INSTALLER_CERTIFICATE_BASE64 (and APPLE_INSTALLER_CERTIFICATE_PASSWORD) to enable signed .pkg builds."
+            echo "::warning::No Developer ID Installer certificate in the keychain — the .pkg will ship unsigned and un-notarized. Add APPLE_INSTALLER_CERTIFICATE_BASE64 (and APPLE_INSTALLER_CERTIFICATE_PASSWORD) to enable signed .pkg builds."
           fi
 
           echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
