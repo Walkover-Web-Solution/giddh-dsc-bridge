@@ -9,10 +9,9 @@
 # APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID are set, the signed .pkg is also
 # submitted to Apple's notary service and stapled.
 #
-# Apple rejects an unsigned .pkg during notarization, so when a Developer ID
-# Application certificate is present but the Developer ID Installer one is not,
-# the DMG ships the signed .app (which installs the host on first launch)
-# instead of a .pkg that could never pass notarization.
+# Apple rejects an unsigned .pkg during notarization, so without a Developer ID
+# Installer certificate the .pkg (and the DMG around it) ships un-notarized and
+# users have to right-click -> Open on first install.
 #
 # Requirements (provided by the macOS CI runner): python3, pyinstaller,
 # pkgbuild, productsign, hdiutil (all ship with macOS + the pip deps installed
@@ -77,18 +76,13 @@ else
   echo "==> No Developer ID Installer identity found"
 fi
 
-# A .pkg that Apple will notarize must be productsign'd with a Developer ID
-# Installer certificate. When only the Application certificate is available,
-# ship the signed .app instead — it bundles the host and installs it on first
-# launch (see install_native_host() in giddh_dsc_status.py), so no installer
-# certificate is needed. A fully unsigned local build still produces a .pkg
-# because it never goes through notarization.
-if [ -n "${APPLE_INSTALLER_IDENTITY:-}" ] || [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
-  SHIP_PKG=1
-else
-  SHIP_PKG=0
-  echo "==> WARNING: no Developer ID Installer certificate — the DMG will ship"
-  echo "             the signed .app instead of an unsignable .pkg"
+# Apple only notarizes a .pkg that was productsign'd with a Developer ID
+# Installer certificate. Without that certificate the .pkg still installs
+# correctly, it just cannot be notarized — so the build keeps shipping it and
+# the notarization/stapling steps are skipped instead.
+if [ -z "${APPLE_INSTALLER_IDENTITY:-}" ]; then
+  echo "==> WARNING: .pkg will be UNSIGNED and cannot be notarized."
+  echo "             Users must right-click the .pkg -> Open on first install."
 fi
 
 # Apple notarization requires EVERY nested Mach-O (shared libraries, .so
@@ -237,19 +231,17 @@ echo "==> Generating postinstall (registers manifest for all Chromium browsers)"
 cp "$HERE/scripts/postinstall" "$SCRIPTS/postinstall"
 chmod +x "$SCRIPTS/postinstall"
 
+echo "==> Building component pkg"
+# pkgbuild marks .app/.framework bundles as RELOCATABLE by default, so the
+# installer uses Spotlight to place them — which can silently divert the app to
+# a stray copy's location instead of /Applications. Force fixed locations by
+# emitting a component plist with BundleIsRelocatable=false for every bundle.
+COMPONENT_PLIST="$BUILD/component.plist"
+UNSIGNED_PKG="$BUILD/GiddhDSCBridge-unsigned.pkg"
 SIGNED_PKG="$OUT/GiddhDSCBridge-$VERSION.pkg"
 
-if [ "$SHIP_PKG" = "1" ]; then
-  echo "==> Building component pkg"
-  # pkgbuild marks .app/.framework bundles as RELOCATABLE by default, so the
-  # installer uses Spotlight to place them — which can silently divert the app to
-  # a stray copy's location instead of /Applications. Force fixed locations by
-  # emitting a component plist with BundleIsRelocatable=false for every bundle.
-  COMPONENT_PLIST="$BUILD/component.plist"
-  UNSIGNED_PKG="$BUILD/GiddhDSCBridge-unsigned.pkg"
-
-  pkgbuild --analyze --root "$PKGROOT" "$COMPONENT_PLIST"
-  /usr/bin/python3 - "$COMPONENT_PLIST" <<'PY'
+pkgbuild --analyze --root "$PKGROOT" "$COMPONENT_PLIST"
+/usr/bin/python3 - "$COMPONENT_PLIST" <<'PY'
 import plistlib, sys
 path = sys.argv[1]
 with open(path, "rb") as f:
@@ -260,33 +252,32 @@ with open(path, "wb") as f:
     plistlib.dump(data, f)
 PY
 
-  pkgbuild \
-    --root "$PKGROOT" \
-    --component-plist "$COMPONENT_PLIST" \
-    --scripts "$SCRIPTS" \
-    --identifier "$HOST_NAME" \
-    --version "$VERSION" \
-    --install-location "/" \
-    "$UNSIGNED_PKG"
+pkgbuild \
+  --root "$PKGROOT" \
+  --component-plist "$COMPONENT_PLIST" \
+  --scripts "$SCRIPTS" \
+  --identifier "$HOST_NAME" \
+  --version "$VERSION" \
+  --install-location "/" \
+  "$UNSIGNED_PKG"
 
-  if [ -n "${APPLE_INSTALLER_IDENTITY:-}" ]; then
-    echo "==> Signing .pkg with Developer ID Installer"
-    productsign \
-      --sign "$APPLE_INSTALLER_IDENTITY" \
-      "$UNSIGNED_PKG" \
-      "$SIGNED_PKG"
+if [ -n "${APPLE_INSTALLER_IDENTITY:-}" ]; then
+  echo "==> Signing .pkg with Developer ID Installer"
+  productsign \
+    --sign "$APPLE_INSTALLER_IDENTITY" \
+    "$UNSIGNED_PKG" \
+    "$SIGNED_PKG"
 
-    echo "==> Verifying .pkg signature"
-    pkgutil --check-signature "$SIGNED_PKG"
-  else
-    echo "==> Building UNSIGNED .pkg (local build — no signing identities)"
-    cp "$UNSIGNED_PKG" "$SIGNED_PKG"
-  fi
+  echo "==> Verifying .pkg signature"
+  pkgutil --check-signature "$SIGNED_PKG"
+else
+  echo "==> Shipping UNSIGNED .pkg (no Developer ID Installer identity)"
+  cp "$UNSIGNED_PKG" "$SIGNED_PKG"
 fi
 
 # Notarize the signed .pkg when Apple notary credentials are present.
-if [ "$SHIP_PKG" = "1" ] && [ -n "${APPLE_INSTALLER_IDENTITY:-}" ] && \
-   [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+if [ -n "${APPLE_INSTALLER_IDENTITY:-}" ] && [ -n "${APPLE_ID:-}" ] && \
+   [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
   echo "==> Submitting .pkg to Apple Notary Service"
   set +e
   SUBMIT_OUTPUT=$(xcrun notarytool submit "$SIGNED_PKG" \
@@ -318,11 +309,7 @@ else
 fi
 
 echo "==> Staging DMG contents"
-if [ "$SHIP_PKG" = "1" ]; then
-  cp "$SIGNED_PKG" "$DMGROOT/GiddhDSCBridge.pkg"
-else
-  cp -R "$APP_OUT" "$DMGROOT/"
-fi
+cp "$SIGNED_PKG" "$DMGROOT/GiddhDSCBridge.pkg"
 cp "$ROOT/packaging/macos/DMG_README.txt" "$DMGROOT/READ ME FIRST.txt" 2>/dev/null || true
 
 echo "==> Building dmg"
@@ -336,7 +323,5 @@ hdiutil create \
 # Remove it so LaunchServices/Spotlight don't index a stray, non-installed copy.
 rm -rf "$OUT/Giddh DSC Bridge.app"
 
-if [ "$SHIP_PKG" = "1" ]; then
-  echo "==> Done: $SIGNED_PKG"
-fi
+echo "==> Done: $SIGNED_PKG"
 echo "==> Done: $OUT/GiddhDSCBridge-$VERSION.dmg"

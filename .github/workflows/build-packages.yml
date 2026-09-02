@@ -221,6 +221,14 @@ jobs:
             exit 0
           fi
 
+          # Apple validates nested content, so a DMG wrapping an unsigned .pkg
+          # is always rejected. Skip notarization until a Developer ID
+          # Installer certificate is available to productsign the .pkg.
+          if [ -z "${APPLE_INSTALLER_IDENTITY:-}" ]; then
+            echo "::warning::Inner .pkg is unsigned (no Developer ID Installer certificate), so the DMG cannot be notarized. Users must right-click the .pkg -> Open. Add APPLE_INSTALLER_CERTIFICATE_BASE64 to enable notarization."
+            exit 0
+          fi
+
           echo "Signing DMG container..."
           codesign \
             --force \

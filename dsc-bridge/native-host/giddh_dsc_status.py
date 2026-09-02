@@ -51,11 +51,46 @@ def get_app_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _bundle_search_roots() -> list[Path]:
+    """Directories that can hold files shipped alongside the frozen program.
+
+    Inside a macOS .app, PyInstaller puts the executable in Contents/MacOS,
+    binaries in Contents/Frameworks and data files in Contents/Resources (the
+    two mirror each other through relative symlinks). Bundled files are
+    therefore NOT necessarily beside the executable, so every location has to
+    be searched.
+    """
+    roots = [get_app_root()]
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass).resolve())
+
+    if getattr(sys, "frozen", False) and is_mac():
+        contents = Path(sys.executable).resolve().parent.parent
+        roots.append(contents / "Frameworks")
+        roots.append(contents / "Resources")
+
+    unique: list[Path] = []
+    for root in roots:
+        if root not in unique:
+            unique.append(root)
+    return unique
+
+
+def find_bundled_path(name: str) -> Path | None:
+    """Locate a file/directory shipped with the app, or None if absent."""
+    for root in _bundle_search_roots():
+        candidate = root / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _resolve_version() -> str:
     """Return the build-time version if available, else the repo VERSION file."""
-    app_root = get_app_root()
-    buildinfo = app_root / "_buildinfo.py"
-    if buildinfo.exists():
+    buildinfo = find_bundled_path("_buildinfo.py")
+    if buildinfo is not None:
         try:
             ns = {}
             exec(compile(buildinfo.read_text(encoding="utf-8"), str(buildinfo), "exec"), ns)
@@ -65,7 +100,10 @@ def _resolve_version() -> str:
         except Exception:
             pass
 
-    version_candidates = [app_root / "VERSION"]
+    version_candidates = []
+    bundled_version = find_bundled_path("VERSION")
+    if bundled_version is not None:
+        version_candidates.append(bundled_version)
     if not getattr(sys, "frozen", False):
         # Development: this script lives at dsc-bridge/native-host/, so the
         # repo VERSION file is two directories up.
@@ -83,8 +121,8 @@ def _resolve_version() -> str:
 
 def _get_buildinfo() -> dict:
     """Read build-time metadata written by the packaging script."""
-    buildinfo = get_app_root() / "_buildinfo.py"
-    if buildinfo.exists():
+    buildinfo = find_bundled_path("_buildinfo.py")
+    if buildinfo is not None:
         try:
             ns = {}
             exec(compile(buildinfo.read_text(encoding="utf-8"), str(buildinfo), "exec"), ns)
@@ -168,9 +206,8 @@ def install_native_host() -> tuple[bool, str | None]:
         # The .pkg/.deb installers handle this on other platforms.
         return True, None
 
-    app_root = get_app_root()
-    bundled_host = app_root / "giddh-dsc-host"
-    if not bundled_host.exists():
+    bundled_host = find_bundled_path("giddh-dsc-host")
+    if bundled_host is None:
         return False, "Bundled native host not found."
 
     if not EXT_ID:
@@ -189,13 +226,16 @@ def install_native_host() -> tuple[bool, str | None]:
     except Exception as exc:
         return False, f"Failed to copy native host: {exc}"
 
-    bundled_internal = app_root / "_internal"
-    if bundled_internal.exists():
+    bundled_internal = find_bundled_path("_internal")
+    if bundled_internal is not None:
         dest_internal = support_dir / "_internal"
         try:
             if dest_internal.exists():
                 shutil.rmtree(dest_internal)
-            shutil.copytree(bundled_internal, dest_internal)
+            # The bundle's Frameworks/Resources trees cross-reference each
+            # other with relative symlinks that break once copied out, so
+            # resolve them into real files here.
+            shutil.copytree(bundled_internal, dest_internal, symlinks=False)
         except Exception as exc:
             return False, f"Failed to copy native host libraries: {exc}"
 
@@ -496,12 +536,17 @@ def main() -> int:
     if is_mac():
         ok, err = install_native_host()
         if not ok:
-            logger.error("Native host installation failed: %s", err)
-            messagebox.showerror(
-                f"{APP_NAME} — Setup failed",
-                f"Could not install the DSC bridge host:\n\n{err}",
+            # Not fatal: the .pkg installer registers the host system-wide, so
+            # the bridge can already be working. Report it and keep the window
+            # open (Check token tells the user the live state) instead of
+            # exiting to a blank screen.
+            logger.warning("Native host self-install skipped: %s", err)
+            messagebox.showwarning(
+                f"{APP_NAME} — Setup notice",
+                "Could not install the DSC bridge host from this app:\n\n"
+                f"{err}\n\nIf you installed via the .pkg installer this is "
+                "expected. Use “Check token” to verify the bridge works.",
             )
-            return 1
 
     app = StatusApp(root)
 
