@@ -103,7 +103,21 @@ fi
 echo "    OK: $(cat "$SMOKE_LOG" | head -c 200)"
 
 if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
-  echo "==> Signing staged native host binary"
+  echo "==> Deep-signing staged native host and all internal dependencies"
+
+  # 1. Sign all .so, .dylib, and Python framework binaries inside _internal
+  find "$PKGROOT$INSTALL_DIR/_internal" -type f \( -name "*.so" -o -name "*.dylib" -o -name "Python*" \) | while read -r lib; do
+    echo "Signing shared lib: $lib"
+    codesign \
+      --force \
+      --verbose \
+      --options runtime \
+      --timestamp \
+      --sign "$APPLE_SIGNING_IDENTITY" \
+      "$lib"
+  done
+
+  # 2. Sign the main native host binary
   codesign \
     --force \
     --verbose \
