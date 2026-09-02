@@ -1,14 +1,26 @@
 #!/bin/bash
-# Build the macOS distributable: freeze the native host, bundle it inside the
-# signed companion .app, then package the .app inside a .dmg.
+# Build the macOS installer: freezes the native host, wraps it in a signed-able
+# .pkg that registers the Chrome native-messaging manifest, then packages the
+# .pkg inside a distributable .dmg.
 #
-# No .pkg / Developer ID Installer certificate is required. The companion app
-# installs the native host into the user's Application Support folder on first
-# launch.
+# When Apple signing identities are available (CI keychain or local keychain),
+# binaries/apps are codesigned with Developer ID Application and the .pkg is
+# productsign'd with Developer ID Installer. When APPLE_ID /
+# APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID are set, the signed .pkg is also
+# submitted to Apple's notary service and stapled.
+#
+# Requirements (provided by the macOS CI runner): python3, pyinstaller,
+# pkgbuild, productsign, hdiutil (all ship with macOS + the pip deps installed
+# by CI).
 #
 # Inputs (env):
-#   VERSION        package version         (default: contents of ../../VERSION)
-#   GIDDH_EXT_ID   published extension ID  (default: contents of ../extension-id.txt)
+#   VERSION                      package version (default: contents of ../../VERSION)
+#   GIDDH_EXT_ID                 published extension ID (default: ../extension-id.txt)
+#   APPLE_SIGNING_IDENTITY       Developer ID Application (auto-detected if unset)
+#   APPLE_INSTALLER_IDENTITY     Developer ID Installer (auto-detected if unset)
+#   APPLE_ID                     Apple ID for notarytool (optional)
+#   APPLE_APP_SPECIFIC_PASSWORD  app-specific password for notarytool (optional)
+#   APPLE_TEAM_ID                Apple Team ID for notarytool (optional)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -17,11 +29,43 @@ DEFAULT_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || echo 1.0.0
 VERSION="${VERSION:-$DEFAULT_VERSION}"
 EXT_ID="${GIDDH_EXT_ID:-$(tr -d '[:space:]' < "$ROOT/packaging/extension-id.txt")}"
 HOST_NAME="com.giddh.dsc.bridge"
+INSTALL_DIR="/usr/local/giddh-dsc-bridge"
+
+# Auto-detect signing identities from the active keychain when not provided.
+if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  APPLE_SIGNING_IDENTITY=$(
+    security find-identity -v -p macappstore 2>/dev/null |
+      grep "Developer ID Application" |
+      head -n 1 |
+      awk -F '"' '{print $2}' || true
+  )
+fi
+if [ -z "${APPLE_INSTALLER_IDENTITY:-}" ]; then
+  APPLE_INSTALLER_IDENTITY=$(
+    security find-identity -v -p macappstore 2>/dev/null |
+      grep "Developer ID Installer" |
+      head -n 1 |
+      awk -F '"' '{print $2}' || true
+  )
+fi
+
+if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  echo "==> Using Developer ID Application: $APPLE_SIGNING_IDENTITY"
+else
+  echo "==> No Developer ID Application identity found — binaries will be unsigned"
+fi
+if [ -n "${APPLE_INSTALLER_IDENTITY:-}" ]; then
+  echo "==> Using Developer ID Installer: $APPLE_INSTALLER_IDENTITY"
+else
+  echo "==> No Developer ID Installer identity found — .pkg will be unsigned"
+fi
 
 BUILD="$ROOT/packaging/macos/build"
+PKGROOT="$BUILD/pkgroot"
+SCRIPTS="$BUILD/scripts"
 DMGROOT="$BUILD/dmgroot"
 OUT="$ROOT/dist"
-rm -rf "$BUILD"; mkdir -p "$DMGROOT" "$OUT"
+rm -rf "$BUILD"; mkdir -p "$PKGROOT$INSTALL_DIR" "$SCRIPTS" "$DMGROOT" "$OUT"
 
 echo "==> Freezing native host with PyInstaller (onedir)"
 ( cd "$ROOT" && python3 -m PyInstaller --clean --noconfirm packaging/pyinstaller/giddh_dsc_host.spec )
@@ -41,24 +85,32 @@ if [ -z "$PY_SHLIB" ] || [ ! -e "$PY_SHLIB" ]; then
   exit 1
 fi
 
-echo "==> Smoke-testing frozen host binary"
+# onedir output is a folder; install its contents into INSTALL_DIR so the
+# executable lands at $INSTALL_DIR/giddh-dsc-host with libs in _internal/ beside it.
+cp -R "$HOST_OUT/." "$PKGROOT$INSTALL_DIR/"
+chmod +x "$PKGROOT$INSTALL_DIR/giddh-dsc-host"
+sync
+
+echo "==> Smoke-testing staged host binary"
 SMOKE_LOG="$BUILD/host_smoketest.log"
-if ! "$HOST_BIN" --diagnose >"$SMOKE_LOG" 2>&1; then
-  echo "ERROR: frozen host binary failed to run. Output:"
+if ! "$PKGROOT$INSTALL_DIR/giddh-dsc-host" --diagnose >"$SMOKE_LOG" 2>&1; then
+  echo "ERROR: staged host binary at $PKGROOT$INSTALL_DIR/giddh-dsc-host failed to run."
+  echo "       This is the exact binary that would ship in the .pkg — the build"
+  echo "       must not continue. Output:"
   cat "$SMOKE_LOG" || true
   exit 1
 fi
 echo "    OK: $(cat "$SMOKE_LOG" | head -c 200)"
 
 if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
-  echo "==> Signing native host binary"
+  echo "==> Signing staged native host binary"
   codesign \
     --force \
     --verbose \
     --options runtime \
     --timestamp \
     --sign "$APPLE_SIGNING_IDENTITY" \
-    "$HOST_BIN"
+    "$PKGROOT$INSTALL_DIR/giddh-dsc-host"
 fi
 
 # Write build metadata so the status app can display the version and register
@@ -106,8 +158,111 @@ if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
     "$APP_OUT"
 fi
 
+mkdir -p "$PKGROOT/Applications"
+cp -R "$APP_OUT" "$PKGROOT/Applications/"
+sync
+
+echo "==> Writing native-messaging manifest (ext id: $EXT_ID)"
+cat > "$PKGROOT$INSTALL_DIR/$HOST_NAME.json" <<EOF
+{
+  "name": "$HOST_NAME",
+  "description": "Giddh DSC Bridge — PKCS#11 token signing",
+  "path": "$INSTALL_DIR/giddh-dsc-host",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://$EXT_ID/"]
+}
+EOF
+
+echo "==> Generating preinstall (wipes any previous install to avoid stale-file debris)"
+cp "$HERE/scripts/preinstall" "$SCRIPTS/preinstall"
+chmod +x "$SCRIPTS/preinstall"
+
+echo "==> Generating postinstall (registers manifest for all Chromium browsers)"
+cp "$HERE/scripts/postinstall" "$SCRIPTS/postinstall"
+chmod +x "$SCRIPTS/postinstall"
+
+echo "==> Building component pkg"
+# pkgbuild marks .app/.framework bundles as RELOCATABLE by default, so the
+# installer uses Spotlight to place them — which can silently divert the app to
+# a stray copy's location instead of /Applications. Force fixed locations by
+# emitting a component plist with BundleIsRelocatable=false for every bundle.
+COMPONENT_PLIST="$BUILD/component.plist"
+UNSIGNED_PKG="$BUILD/GiddhDSCBridge-unsigned.pkg"
+SIGNED_PKG="$OUT/GiddhDSCBridge-$VERSION.pkg"
+
+pkgbuild --analyze --root "$PKGROOT" "$COMPONENT_PLIST"
+/usr/bin/python3 - "$COMPONENT_PLIST" <<'PY'
+import plistlib, sys
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = plistlib.load(f)
+for comp in data:
+    comp["BundleIsRelocatable"] = False
+with open(path, "wb") as f:
+    plistlib.dump(data, f)
+PY
+
+pkgbuild \
+  --root "$PKGROOT" \
+  --component-plist "$COMPONENT_PLIST" \
+  --scripts "$SCRIPTS" \
+  --identifier "$HOST_NAME" \
+  --version "$VERSION" \
+  --install-location "/" \
+  "$UNSIGNED_PKG"
+
+if [ -n "${APPLE_INSTALLER_IDENTITY:-}" ]; then
+  echo "==> Signing .pkg with Developer ID Installer"
+  productsign \
+    --sign "$APPLE_INSTALLER_IDENTITY" \
+    "$UNSIGNED_PKG" \
+    "$SIGNED_PKG"
+
+  echo "==> Verifying .pkg signature"
+  pkgutil --check-signature "$SIGNED_PKG"
+else
+  echo "==> Skipping productsign (no Developer ID Installer identity)"
+  cp "$UNSIGNED_PKG" "$SIGNED_PKG"
+fi
+
+# Notarize the signed .pkg when Apple notary credentials are present.
+if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+  if [ -z "${APPLE_INSTALLER_IDENTITY:-}" ]; then
+    echo "==> Skipping notarization (unsigned .pkg cannot be notarized)"
+  else
+    echo "==> Submitting .pkg to Apple Notary Service"
+    set +e
+    SUBMIT_OUTPUT=$(xcrun notarytool submit "$SIGNED_PKG" \
+      --apple-id "$APPLE_ID" \
+      --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+      --team-id "$APPLE_TEAM_ID" \
+      --wait 2>&1)
+    SUBMIT_EXIT=$?
+    set -e
+    echo "$SUBMIT_OUTPUT"
+
+    if [ $SUBMIT_EXIT -ne 0 ] || ! echo "$SUBMIT_OUTPUT" | grep -q "status: Accepted"; then
+      echo "ERROR: Apple notarization failed for .pkg"
+      SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | awk '/id:/ {print $2; exit}')
+      if [ -n "${SUBMISSION_ID:-}" ]; then
+        xcrun notarytool log "$SUBMISSION_ID" \
+          --apple-id "$APPLE_ID" \
+          --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+          --team-id "$APPLE_TEAM_ID" || true
+      fi
+      exit 1
+    fi
+
+    echo "==> Stapling notarization ticket to .pkg"
+    xcrun stapler staple "$SIGNED_PKG"
+    xcrun stapler validate "$SIGNED_PKG"
+  fi
+else
+  echo "==> Skipping notarization (APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID not all set)"
+fi
+
 echo "==> Staging DMG contents"
-cp -R "$APP_OUT" "$DMGROOT/"
+cp "$SIGNED_PKG" "$DMGROOT/GiddhDSCBridge.pkg"
 cp "$ROOT/packaging/macos/DMG_README.txt" "$DMGROOT/READ ME FIRST.txt" 2>/dev/null || true
 
 echo "==> Building dmg"
@@ -117,8 +272,9 @@ hdiutil create \
   -ov -format UDZO \
   "$OUT/GiddhDSCBridge-$VERSION.dmg"
 
-# The loose PyInstaller .app in dist/ is already captured inside the dmg.
+# The loose PyInstaller .app in dist/ is already captured inside the pkg/dmg.
 # Remove it so LaunchServices/Spotlight don't index a stray, non-installed copy.
 rm -rf "$OUT/Giddh DSC Bridge.app"
 
+echo "==> Done: $SIGNED_PKG"
 echo "==> Done: $OUT/GiddhDSCBridge-$VERSION.dmg"
