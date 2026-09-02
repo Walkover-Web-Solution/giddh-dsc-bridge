@@ -68,6 +68,8 @@ jobs:
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_BASE64 }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
@@ -96,6 +98,27 @@ jobs:
             -t cert \
             -f pkcs12 \
             -k "$KEYCHAIN_PATH"
+
+          # The Developer ID Installer certificate needed by productsign is
+          # often issued as its own .p12. Import it too when provided.
+          if [ -n "${APPLE_INSTALLER_CERTIFICATE_BASE64:-}" ]; then
+            INSTALLER_CERTIFICATE_PATH="$RUNNER_TEMP/developer-id-installer.p12"
+
+            echo "Importing Developer ID Installer certificate..."
+            echo "$APPLE_INSTALLER_CERTIFICATE_BASE64" | base64 --decode > "$INSTALLER_CERTIFICATE_PATH"
+
+            if [ ! -s "$INSTALLER_CERTIFICATE_PATH" ]; then
+              echo "::error::Decoded installer certificate file is empty."
+              exit 1
+            fi
+
+            security import "$INSTALLER_CERTIFICATE_PATH" \
+              -P "${APPLE_INSTALLER_CERTIFICATE_PASSWORD:-$APPLE_CERTIFICATE_PASSWORD}" \
+              -A \
+              -t cert \
+              -f pkcs12 \
+              -k "$KEYCHAIN_PATH"
+          fi
 
           echo "Configuring keychain access for codesign and productsign..."
           security set-key-partition-list \
@@ -126,10 +149,18 @@ jobs:
             awk -F'"' '/Developer ID Application/ {print $2; exit}'
           )
 
+          # Installer certificates are not valid for the codesigning-oriented
+          # policies, so fall back to the default identity listing.
           INSTALLER_IDENTITY=$(
             security find-identity -v -p macappstore |
             awk -F'"' '/Developer ID Installer/ {print $2; exit}'
           )
+          if [ -z "$INSTALLER_IDENTITY" ]; then
+            INSTALLER_IDENTITY=$(
+              security find-identity -v |
+              awk -F'"' '/Developer ID Installer/ {print $2; exit}'
+            )
+          fi
 
           if [ -z "$SIGNING_IDENTITY" ]; then
             echo "::error::Developer ID Application certificate not found."
@@ -137,7 +168,7 @@ jobs:
           fi
 
           if [ -z "$INSTALLER_IDENTITY" ]; then
-            echo "::warning::Developer ID Installer certificate missing in .p12 secret. PKG files must be signed with a Developer ID Installer cert to pass Gatekeeper."
+            echo "::warning::No Developer ID Installer certificate in the keychain — a .pkg cannot be signed, so the DMG will ship the signed .app instead. Add APPLE_INSTALLER_CERTIFICATE_BASE64 (and APPLE_INSTALLER_CERTIFICATE_PASSWORD) to enable signed .pkg builds."
           fi
 
           echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
