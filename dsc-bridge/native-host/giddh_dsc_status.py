@@ -193,75 +193,92 @@ def get_tray_icon_path() -> str | None:
     return None
 
 
-def install_native_host() -> tuple[bool, str | None]:
-    """Install the bundled native host and browser manifest (user-level).
+def _mac_browser_profile_roots() -> dict[str, Path]:
+    home = Path.home()
+    return {
+        "Chrome": home / "Library" / "Application Support" / "Google" / "Chrome",
+        "Brave": home / "Library" / "Application Support" / "BraveSoftware" / "Brave-Browser",
+        "Edge": home / "Library" / "Application Support" / "Microsoft Edge",
+        "Chromium": home / "Library" / "Application Support" / "Chromium",
+    }
 
-    The companion app ships with the frozen host binary inside its bundle.
-    On first launch it copies the binary and support libraries to the user's
-    Application Support directory and registers the native-messaging manifest
-    for the common Chromium-based browsers. This avoids an installer package
-    and therefore a Developer ID Installer certificate.
+
+def _remove_stale_user_native_host() -> None:
+    """Remove broken Application Support host copies + user NMH manifests.
+
+    Older builds copied the signed PyInstaller host into Application Support.
+    That breaks the Python framework code signature, and Chrome prefers the
+    user-level manifest over the working system host — surfacing as
+    "Native host has exited".
+    """
+    support_dir = Path.home() / "Library" / "Application Support" / "Giddh DSC Bridge"
+    try:
+        if support_dir.exists():
+            shutil.rmtree(support_dir)
+    except Exception as exc:
+        logger.warning("Could not remove stale user-level host copy: %s", exc)
+
+    for name, base in _mac_browser_profile_roots().items():
+        manifest_path = base / "NativeMessagingHosts" / "com.giddh.dsc.bridge.json"
+        try:
+            if manifest_path.exists():
+                manifest_path.unlink()
+        except Exception as exc:
+            logger.warning("Could not remove stale manifest for %s: %s", name, exc)
+
+
+def install_native_host() -> tuple[bool, str | None]:
+    """Register the native-messaging host for Chromium browsers (macOS).
+
+    Prefer the .pkg system install under ``/usr/local/giddh-dsc-bridge/``.
+    If that is missing, point browser manifests at the host binary still
+    inside this .app bundle — never copy it out (copying invalidates the
+    Developer ID signature on ``_internal/Python``).
     """
     if not is_mac():
-        # The .pkg/.deb installers handle this on other platforms.
         return True, None
 
-    bundled_host = find_bundled_path("giddh-dsc-host")
-    if bundled_host is None:
-        return False, "Bundled native host not found."
+    system_host = Path("/usr/local/giddh-dsc-bridge/giddh-dsc-host")
+    # Always scrub legacy user-level copies first.
+    _remove_stale_user_native_host()
+
+    if system_host.exists():
+        logger.info("System host found; using /usr/local/giddh-dsc-bridge.")
+        return True, None
 
     if not EXT_ID:
         return False, "Extension ID not available; cannot register native host."
 
-    support_dir = Path.home() / "Library" / "Application Support" / "Giddh DSC Bridge"
-    try:
-        support_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:
-        return False, f"Cannot create support directory: {exc}"
-
-    installed_host = support_dir / "giddh-dsc-host"
-    try:
-        shutil.copy2(bundled_host, installed_host)
-        os.chmod(installed_host, 0o755)
-    except Exception as exc:
-        return False, f"Failed to copy native host: {exc}"
-
-    bundled_internal = find_bundled_path("_internal")
-    if bundled_internal is not None:
-        dest_internal = support_dir / "_internal"
-        try:
-            if dest_internal.exists():
-                shutil.rmtree(dest_internal)
-            # The bundle's Frameworks/Resources trees cross-reference each
-            # other with relative symlinks that break once copied out, so
-            # resolve them into real files here.
-            shutil.copytree(bundled_internal, dest_internal, symlinks=False)
-        except Exception as exc:
-            return False, f"Failed to copy native host libraries: {exc}"
+    # Prefer the real Mach-O next to `_internal/` (Frameworks), not a Resources symlink.
+    bundled_host = None
+    if getattr(sys, "frozen", False):
+        frameworks_host = (
+            Path(sys.executable).resolve().parent.parent / "Frameworks" / "giddh-dsc-host"
+        )
+        if frameworks_host.is_file():
+            bundled_host = frameworks_host
+    if bundled_host is None:
+        found = find_bundled_path("giddh-dsc-host")
+        if found is not None:
+            bundled_host = found.resolve()
+    if bundled_host is None or not bundled_host.is_file():
+        return False, "Bundled native host not found."
 
     manifest = {
         "name": "com.giddh.dsc.bridge",
         "description": "Giddh DSC Bridge — PKCS#11 token signing",
-        "path": str(installed_host),
+        "path": str(bundled_host),
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{EXT_ID}/"],
     }
     manifest_json = json.dumps(manifest, indent=2)
 
-    browsers = {
-        "Chrome": Path.home() / "Library" / "Application Support" / "Google" / "Chrome",
-        "Brave": Path.home() / "Library" / "Application Support" / "BraveSoftware" / "Brave-Browser",
-        "Edge": Path.home() / "Library" / "Application Support" / "Microsoft Edge",
-        "Chromium": Path.home() / "Library" / "Application Support" / "Chromium",
-    }
-
     installed_any = False
-    for name, base in browsers.items():
+    for name, base in _mac_browser_profile_roots().items():
         nm_dir = base / "NativeMessagingHosts"
         try:
             nm_dir.mkdir(parents=True, exist_ok=True)
-            manifest_path = nm_dir / "com.giddh.dsc.bridge.json"
-            manifest_path.write_text(manifest_json, encoding="utf-8")
+            (nm_dir / "com.giddh.dsc.bridge.json").write_text(manifest_json, encoding="utf-8")
             installed_any = True
         except Exception as exc:
             logger.warning("Could not register host for %s: %s", name, exc)
@@ -530,9 +547,8 @@ def main() -> int:
     root = tk.Tk()
     _apply_palette(root)
 
-    # On macOS the app ships the native host inside its bundle; install it
-    # (and the browser manifest) into the user's Application Support folder
-    # on first launch so the extension can connect without an installer pkg.
+    # On macOS: scrub legacy user-level host copies and ensure the extension
+    # can reach either the .pkg system host or the host inside this .app.
     if is_mac():
         ok, err = install_native_host()
         if not ok:
@@ -543,7 +559,7 @@ def main() -> int:
             logger.warning("Native host self-install skipped: %s", err)
             messagebox.showwarning(
                 f"{APP_NAME} — Setup notice",
-                "Could not install the DSC bridge host from this app:\n\n"
+                "Could not register the DSC bridge host from this app:\n\n"
                 f"{err}\n\nIf you installed via the .pkg installer this is "
                 "expected. Use “Check token” to verify the bridge works.",
             )

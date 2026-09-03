@@ -118,9 +118,9 @@ icons/                       all app icon assets in one folder (see §7)
   stay in.** The PIN travels page → background → native host → PKCS#11
   `C_Login` and is never persisted or logged. Do not add logging that prints
   a raw PIN or hash payload beyond what already exists.
-- **Extension ID is fixed** via the `key` field in `manifest.json` (derived
-  from the gitignored `giddh-extension-key.pem`). The native host manifest's
-  `allowed_origins` (written by the installer from
+- **Extension ID is fixed** via the `key` field in `manifest.json` (Chrome Web
+  Store public key → ID `pbnmboohmdoknhpflpmeocccojkkjgng`). The native host
+  manifest's `allowed_origins` (written by the installer from
   `packaging/extension-id.txt`) must match it exactly, or Chrome refuses the
   connection ("Access to the specified native messaging host is forbidden").
 

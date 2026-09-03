@@ -27,7 +27,7 @@ docs/            WINDOWS_SIGNING.md and other reference docs
 icons/            all app icon assets in one folder (see `PROJECT.md` §7)
 VERSION          single source of truth for the app version
 PROJECT.md       one-file project guide for AI agents / new contributors
-giddh-extension-key.pem   SECRET signing key → the fixed extension ID (gitignored)
+giddh-extension-key.pem   legacy local signing key (gitignored; not the store ID)
 INTEGRATION.md   API contract for the Giddh web app + backend
 ```
 
@@ -45,13 +45,10 @@ installer build works on any computer** — no per-machine ID copying.
 
 - The store ID is assigned by the Chrome Web Store on first upload and stays
   fixed for the item forever. The store rejects the manifest `key` field, so
-  the published build does not carry one.
-- The **dev/unpacked** copy in `dsc-bridge/extension/` still carries the `key`
-  field (public half of `giddh-extension-key.pem`), so loading it unpacked
-  yields the old dev ID `klmgadogecbimgjkepdljfljajphemfl`. An installer whose
-  `allowed_origins` lists only the store ID will refuse that unpacked copy —
-  for local dev testing, use your existing dev install or build an installer
-  that whitelists both IDs.
+  the published zip does not carry one.
+- The **dev/unpacked** copy in `dsc-bridge/extension/` carries the store
+  public key in the manifest `key` field, so **Load unpacked** yields the
+  same ID (`pbnmboohmdoknhpflpmeocccojkkjgng`) and works with the installer.
 - If a build's ID ever mismatches the loaded extension, Chrome shows
   *"Access to the specified native messaging host is forbidden."*
 
@@ -68,7 +65,7 @@ You receive two things (shared separately):
    Windows SmartScreen may warn → click **More info → Run anyway**.
 2. **Load the extension:** `chrome://extensions` → enable **Developer mode**
    (top-right) → **Load unpacked** → select the `dsc-bridge/extension/` folder.
-   The ID must read `klmgadogecbimgjkepdljfljajphemfl`.
+   The ID must read `pbnmboohmdoknhpflpmeocccojkkjgng`.
 3. **Plug in the DSC token.** Its **vendor driver** must already be installed —
    it normally ships with the token. The bridge **auto-detects** the token across
    common vendors (WatchData/ProxKey/Capricorn, SafeNet/eToken, Feitian
@@ -126,6 +123,12 @@ the host load an arbitrary library outside the detected set.
 - *"Access to the native messaging host is forbidden"* → the loaded extension ID
   doesn't match the installer's. The store-installed extension must read
   `pbnmboohmdoknhpflpmeocccojkkjgng`.
+- *"Native host has exited"* (macOS) → Chrome is launching a broken user-level
+  host copy under `~/Library/Application Support/Giddh DSC Bridge/` instead of
+  `/usr/local/giddh-dsc-bridge/`. Delete that folder and any
+  `~/Library/Application Support/*/NativeMessagingHosts/com.giddh.dsc.bridge.json`,
+  then reinstall the `.pkg` / relaunch **Giddh DSC Bridge**. Newer builds scrub
+  this automatically in postinstall.
 - *"No PKCS#11 module available"* → install the token's 64-bit vendor driver,
   then click **Check token** in the companion app or **Run Diagnose** on the
   test page.

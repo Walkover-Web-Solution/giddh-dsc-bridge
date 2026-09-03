@@ -3,7 +3,7 @@
   "name": "Giddh DSC Bridge",
   "version": "1.0.0",
   "description": "Connects Giddh e-signature to hardware DSC tokens via PKCS#11. No per-origin license required.",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzF5qHhLb53uXc73gAu6ajlVoOE8xQntxN4kzyk8hEKHX9MK7+XZAIYrLhPpjQJrY5gr4cN11D7CBfORhJXtRvDfHViTZHExa4hIYMrud5VEunfZibAJdP7WmSp2QurFNDIRwTUBPAHBIcSLs9lUZId5a0sZcyZMdcTAwMtUT7RqA+Y7Psw2nrzdel2Ry0uNzcgkV688iMkPeNOVogsxx+fVtOruFWFYP6/uyxVBO1W7OhdEoH11+hDy7BNjTKmvVNwn2VLeUJOqGCbaknSL2oRG/EEZ9p1V+q4Toyeg2ENvc5ZpmuPkjuQudZwMMqsqPFbxyZMAjqpXSp9kfUHKrYwIDAQAB",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtLXOISP9Qwg6DevFNudbT229n0IwI7idY5JCOmlLY4r0fmfn9Z6FS8W3DqiJOaqdagDIkMY8LgPWx8vvXE3aJCexPGGzB1xXxTqMSa0h1XF+35acbBQU7aF5yydagovKzwjdAT5M8LLgmVIRSVJqtQNOJLbEfPNaHeMz9zzUO7/CsmY4zRQLwtZ9HNtKfkYUvA067EhNQaSIPbT+/zXJ9M5BrqdPIfMFfEh2RqGc/LxG2xxMLprYIUjRiSMuSa+WN12jT4bQqUh10KLe/fRG5SE5SXVUPeYO6gouKP49lbVx2/MMmAs+lj/5n2VuetEOjIPKhGC+5TehaVdDYyLIAQIDAQAB",
   "permissions": ["nativeMessaging"],
   "icons": {
     "16": "icons/icon16.png",

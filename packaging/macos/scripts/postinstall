@@ -23,9 +23,32 @@ for d in "${DIRS[@]}"; do
   chmod 644 "$d/$HOST_NAME.json"
 done
 
-# Strip the quarantine flag from the installed host so Gatekeeper does not block
-# it when Chrome launches it. (Unsigned build — remove once Developer ID signing
-# + notarization are in place.)
+# Chrome prefers *user-level* NativeMessagingHosts over system ones. Older
+# companion apps copied the signed host into ~/Library/Application Support,
+# which breaks the Python framework signature and yields
+# "Native host has exited". Remove those leftovers for every local user so
+# the system host registered above is the one Chrome actually launches.
+USER_NMH_REL_PATHS=(
+  "Library/Application Support/Google/Chrome/NativeMessagingHosts"
+  "Library/Application Support/Google/Chrome Beta/NativeMessagingHosts"
+  "Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+  "Library/Application Support/Microsoft Edge/NativeMessagingHosts"
+  "Library/Application Support/Chromium/NativeMessagingHosts"
+)
+
+for home in /Users/*; do
+  [ -d "$home" ] || continue
+  case "$(basename "$home")" in
+    Shared|Guest) continue ;;
+  esac
+  rm -rf "$home/Library/Application Support/Giddh DSC Bridge"
+  for rel in "${USER_NMH_REL_PATHS[@]}"; do
+    rm -f "$home/$rel/$HOST_NAME.json"
+  done
+done
+
+# Strip quarantine so Gatekeeper does not block Chrome launching the host.
 xattr -dr com.apple.quarantine "$INSTALL_DIR" 2>/dev/null || true
+xattr -dr com.apple.quarantine "/Applications/Giddh DSC Bridge.app" 2>/dev/null || true
 
 exit 0

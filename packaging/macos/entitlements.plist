@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The native host must load third-party PKCS#11 drivers (.dylib/.so) from
+       DSC token vendors. Those libraries are signed by their own developers (or
+       are unsigned/ad-hoc), so hardened runtime's library validation blocks them
+       by default with "different Team IDs". Disable library validation so the
+       bridge can talk to the token hardware. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

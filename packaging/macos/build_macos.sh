@@ -34,6 +34,7 @@ VERSION="${VERSION:-$DEFAULT_VERSION}"
 EXT_ID="${GIDDH_EXT_ID:-$(tr -d '[:space:]' < "$ROOT/packaging/extension-id.txt")}"
 HOST_NAME="com.giddh.dsc.bridge"
 INSTALL_DIR="/usr/local/giddh-dsc-bridge"
+ENTITLEMENTS_FILE="$HERE/entitlements.plist"
 
 # Auto-detect signing identities from the active keychain when not provided.
 # Developer ID Installer certificates are not valid for the codesigning
@@ -157,6 +158,7 @@ if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
     --verbose \
     --options runtime \
     --timestamp \
+    --entitlements "$ENTITLEMENTS_FILE" \
     --sign "$APPLE_SIGNING_IDENTITY" \
     "$PKGROOT$INSTALL_DIR/giddh-dsc-host"
 fi
@@ -196,6 +198,7 @@ if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
     --verbose \
     --options runtime \
     --timestamp \
+    --entitlements "$ENTITLEMENTS_FILE" \
     --sign "$APPLE_SIGNING_IDENTITY" \
     "$APP_OUT"
 
