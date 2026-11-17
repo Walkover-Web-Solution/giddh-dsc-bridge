@@ -1827,6 +1827,15 @@ class IsolatedSigner:
         # session on) every other plugged-in token first. Untagged/legacy
         # certIds fall back to probing all drivers as before.
         driver_path, raw_id = _decode_cert_id(cert_id_hex)
+        # The driver tag comes from the web page, so it is untrusted: accept it
+        # only if it is a driver this host already detected or the user attached
+        # (self.driver_paths). Otherwise a page could make the host dlopen any
+        # local library — the same rule list_certificates() enforces for its
+        # only_driver argument. An unknown tag falls back to probing all drivers,
+        # exactly like an untagged/legacy certId.
+        if driver_path and driver_path not in self.driver_paths:
+            _log("sign: ignoring certId driver tag that is not a known driver")
+            driver_path = None
         # The PIN travels over the worker's stdin pipe only — never argv, so it
         # cannot leak into process listings.
         reply = self._run_on_token({
