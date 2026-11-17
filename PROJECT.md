@@ -1,3 +1,5 @@
+> **Superseded (2026-11-17)** by [AGENTS.md](AGENTS.md) and [docs/](docs/). Kept for history; parts of it no longer match the code (e.g. the companion app's buttons, CI triggers). Do not update it.
+
 # PROJECT.md — Giddh DSC Bridge (AI Agent / Contributor Guide)
 
 Single-file reference for anyone (human or AI agent) picking up this repo cold.

@@ -1,5 +1,7 @@
 # Giddh DSC Bridge
 
+> **Engineers and agents: start at [AGENTS.md](AGENTS.md).** `PROJECT.md` is superseded. Known security issues are listed in [docs/OPEN_QUESTIONS.md](docs/OPEN_QUESTIONS.md).
+
 Client-side signing of Giddh documents with a hardware **DSC token** (PKCS#11).
 The browser talks to a small local program that drives the token; the private
 key never leaves the device.

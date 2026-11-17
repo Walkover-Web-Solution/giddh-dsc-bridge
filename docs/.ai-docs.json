@@ -1,0 +1,11 @@
+{
+  "skill": "ai-docs",
+  "skill_version": "2.0.0",
+  "created": "2026-11-17",
+  "last_run": { "mode": "init", "commit": "c591bc2", "date": "2026-11-17" },
+  "canonical_docs": ["AGENTS.md","docs/VISION.md","docs/ARCHITECTURE.md","docs/FLOWS.md","docs/DESIGN.md","docs/CONTRACTS.md","docs/DEVELOPMENT.md","docs/DECISIONS.md","docs/OPEN_QUESTIONS.md"],
+  "docs": {"AGENTS.md":"AGENTS.md","CLAUDE.md":"(one line: @AGENTS.md)","docs/VISION.md":"VISION.md","docs/ARCHITECTURE.md":"ARCHITECTURE.md","docs/FLOWS.md":"FLOWS.md + flow.md","docs/DESIGN.md":"DESIGN.md (adapted: popup, companion app, test page)","docs/CONTRACTS.md":"CONTRACTS.md (summarises dsc-bridge/INTEGRATION.md)","docs/DEVELOPMENT.md":"DEVELOPMENT.md","docs/DECISIONS.md":"DECISIONS.md","docs/OPEN_QUESTIONS.md":"OPEN_QUESTIONS.md"},
+  "skipped_templates": {"docs/00-24 numbered guides":"duplicate the canonical set on a ~3.5k-line repo","docs/modules/, api/, database/, ui/":"small repo, no database","docs/plans/, brainstorms/":"written per change, never generated"},
+  "superseded": ["PROJECT.md"],
+  "kept_as_authoritative": ["dsc-bridge/INTEGRATION.md (web app/backend contract)","docs/WINDOWS_SIGNING.md (runbook)","README.md (user/ops facing)"]
+}
