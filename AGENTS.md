@@ -37,7 +37,7 @@ Verified on 2026-11-17 in a scratch copy. [docs/DEVELOPMENT.md](docs/DEVELOPMENT
 ## Project Rules & Boundaries
 
 1. **Treat this as security software.** Any change to origins, the message protocol, driver loading or PIN handling needs its own PR, a stated reason and the owner's approval ([VISION.md](docs/VISION.md#core-principles--design-philosophy)).
-2. **Never let a page choose which library the host loads.** Driver paths come only from detection or the local companion app. The `certId` path in `sign_hash` breaks this today; that's a bug to fix, not a pattern to copy ([OPEN_QUESTIONS.md](docs/OPEN_QUESTIONS.md#security-issues-found-while-documenting-not-fixed)).
+2. **Never let a page choose which library the host loads.** Driver paths come only from detection or the local companion app. Every driver a request names must be checked against the host's known drivers, as `list_certificates` does (`sign_hash` fix: [PR #2](https://github.com/Walkover-Web-Solution/giddh-dsc-bridge/pull/2)).
 3. **Keep the origin allowlist in sync in both places:** `matches` in `dsc-bridge/extension/manifest.json` and the lists in `background.js` (`_isAllowedOrigin`). `ALLOW_ALL_ORIGINS` must stay `false` in anything that ships.
 4. **Never log, store or echo a PIN,** and never add a code path that exports key material.
 5. **The extension ID is fixed** (`pbnmboohmdoknhpflpmeocccojkkjgng`, from the manifest `key`). Change `packaging/extension-id.txt`, the manifest key or `vars.GIDDH_EXT_ID` only together; otherwise Chrome refuses the host.

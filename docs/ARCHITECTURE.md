@@ -84,7 +84,7 @@ graph TD
 | What gets signed | Any 32/48/64-byte digest an allowed page sends. The bridge cannot see the document; the user's PIN entry is the only consent | `_wrap_digest_info` |
 
 > [!WARNING]
-> `_decode_cert_id` accepts any existing file path encoded in a `certId` and `sign_hash` passes it as `only_driver` without checking it against the detected list, so an allowed origin can make a worker load an arbitrary local library. `list_certificates` validates its `driver`; `sign_hash` does not. Recorded in [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md).
+> At `c591bc2` the driver tag used by `sign_hash` was not checked against the detected drivers, unlike `list_certificates`. The fix is in [PR #2](https://github.com/Walkover-Web-Solution/giddh-dsc-bridge/pull/2); see [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md).
 
 ## Application State Ownership
 

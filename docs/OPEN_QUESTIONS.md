@@ -9,14 +9,10 @@ Questions the repository does not answer, plus the security issues and defects f
 
 ## Security Issues Found While Documenting (not fixed)
 
-Init mode is docs only, so none of these was changed. The first one should be fixed before the next release.
+Init mode is docs only, so none of these was changed. The first one has a fix open in [PR #2](https://github.com/Walkover-Web-Solution/giddh-dsc-bridge/pull/2); ship it before anything else.
 
 > [!WARNING]
-> **A page can make the host load any local library.** `dsc-bridge/native-host/pkcs11_signer.py:IsolatedSigner.sign_hash` decodes a driver path from the page-supplied `certId` (`_decode_cert_id`). If that file exists, it passes the path to `_run_on_token` as `only_driver`, which skips the list of detected drivers. Loading a library runs its constructors, so this is code execution on the user's machine.
->
-> - **Who can trigger it:** any allowed origin, with any PIN and a 32-byte hash. The allowed origins include any `localhost` port and local `file://` pages ([CONTRACTS.md](CONTRACTS.md)). <!-- verify:ignore -->
-> - **What it contradicts:** the rule in `PROJECT.md` §4 and [VISION.md](VISION.md) that a page must never be able to make the host `dlopen` an arbitrary library. `list_certificates` *does* check against the detected drivers; signing does not.
-> - **Fix direction:** accept a decoded path only if it is in the detected or attached driver list. Verified in code at `c591bc2`; not exploited.
+> **Driver selection when signing.** At `c591bc2`, `IsolatedSigner.sign_hash` did not check the driver it routes to against the host's known drivers, as `list_certificates` does. The fix is in [PR #2](https://github.com/Walkover-Web-Solution/giddh-dsc-bridge/pull/2). Fuller details will be added here once that fix has shipped to users.
 
 - **Shipped builds allow `file://` and `http://localhost` on any port** (`dsc-bridge/extension/background.js:_isAllowedOrigin`, `dsc-bridge/extension/manifest.json`). Any local page or local dev server can drive the token. <!-- verify:ignore -->
 - **The bridge signs any hash an allowed page sends.** The only consent step is a PIN prompt that the page draws itself. The PIN and the results cross `window.postMessage(…, "*")` in the page's main world, so every script on an allowed page can see certificates and signatures.

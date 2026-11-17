@@ -51,13 +51,13 @@ The server endpoints, the PAdES engine and the orchestrator `giddh/static/js/dsc
 | 5 | `listModules()` returns `{success, modules, readers, preferred, strict}` | Also returns `configPath`, `detected` and `attached`. `preferred` is a path or `null`. A row that fails to probe carries `error` | `dsc-bridge/native-host/pkcs11_signer.py:IsolatedSigner` (`list_modules`) |
 | 6 | Attaching or pinning a module "happens only in the desktop companion app" | The companion app has had no module UI since `fe15172`. `attach_module` and `set_preferred_module` have no callers, so the config file can only be edited by hand | `dsc-bridge/native-host/giddh_dsc_status.py` |
 | 7 | "Message protocol and error codes are documented in README.md" | README documents neither. They are documented in this file | `README.md` |
-| 8 | A page "can never make the native host dlopen an arbitrary library" | **False for `signHash`.** The driver path inside a page-supplied `certId` is decoded and loaded if the file exists. It is not checked against the detected set (see the warning below) | `dsc-bridge/native-host/pkcs11_signer.py:_decode_cert_id` |
+| 8 | Driver selection is limited to known drivers | **Not fully enforced at `c591bc2`;** fix in [PR #2](https://github.com/Walkover-Web-Solution/giddh-dsc-bridge/pull/2) (see the warning below) | `dsc-bridge/native-host/pkcs11_signer.py:_decode_cert_id` |
 | 9 | `TOKEN_BUSY_OR_ABSENT` means "another app holds the card" | It also means an unresponsive card ("re-insert it") | `dsc-bridge/native-host/pkcs11_signer.py:_classify_card_failure` |
 | 10 | Page timeouts are 30 s for certificates and 60 s for signing (comment in `background.js`) | The background gives up at 55 s. The host's certificate budget is 45 s and its signing budget is 180 s. A 30 s page timeout can fire before the host answers, and a sign that takes over 55 s (a PIN pad, or several drivers) is cut off by the background | `dsc-bridge/extension/background.js:NATIVE_OP_TIMEOUT_MS`, `dsc-bridge/native-host/pkcs11_signer.py:_SIGN_BUDGET` |
 | 11 | Checklist: "`selftest.py` passes all 5 stages" | **Cannot pass:** 5 stages by design (3 with `--no-sign`), but the script exits 2 at import at `c591bc2` (Q-012) | `dsc-bridge/native-host/selftest.py` |
 
 > [!WARNING]
-> **A crafted `certId` makes the host load any library on disk.** `IsolatedSigner.sign_hash` passes `_decode_cert_id(certId)` straight to `_run_on_token(only_driver=…)`. The worker then `dlopen`s that path, which runs the library's initialisers, before any PIN check reaches the token. Any allowed origin can do this, including any `localhost` port and any local file:// page, provided it sends a non-empty PIN and a valid 32-byte hash. `list_certificates` validates `only_driver` against `self.driver_paths`. `sign_hash` must do the same before it routes. Until it does, do not describe the web API as unable to load arbitrary libraries.
+> At `c591bc2`, `signHash` did not validate the driver tag in `certId` against the detected drivers (finding 8). The fix is in [PR #2](https://github.com/Walkover-Web-Solution/giddh-dsc-bridge/pull/2).
 
 ## Browser client API: `window.GiddhBridge`
 
@@ -231,8 +231,8 @@ The code or docs assume these capabilities, but nothing implements them. Specify
 - **Blocking status:** Needs an owner decision: restore the UI, or change the error copy ([OPEN_QUESTIONS](OPEN_QUESTIONS.md)).
 
 ### Proposed check: validate the driver tag in `signHash`
-- **Purpose:** Close finding 8. In `IsolatedSigner.sign_hash`, ignore a decoded driver path that is not in `self.driver_paths`, matching `list_certificates`.
-- **Blocking status:** A code fix. Not done in this docs-only pass.
+- **Purpose:** Close finding 8 by validating the driver tag the same way `list_certificates` does.
+- **Blocking status:** Fix open in [PR #2](https://github.com/Walkover-Web-Solution/giddh-dsc-bridge/pull/2).
 
 ### Proposed page API: `GiddhBridge.ping()`
 - **Purpose:** The host answers `ping` with a version, but the wrapper has no method, so pages can only compare the injected `version`. A `ping()` that resolves `{pong, version}` would let Giddh detect a missing or stale host before asking for a PIN. Fix the hardcoded `"1.1.0"` first.
